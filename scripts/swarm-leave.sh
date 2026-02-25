@@ -178,37 +178,10 @@ if [[ -d "$MESSAGES_DIR/inbox/$ROLE_NAME" ]]; then
     log_info "收件箱消息已归档"
 fi
 
-# 5. 通知其他角色（双通道：inbox + paste-buffer）
-LEAVE_MSG="角色 $ROLE_NAME 已离开蜂群。${REASON:+原因: $REASON。}该角色的职责需要由其他成员承担，执行 swarm-msg.sh list-roles 查看当前团队。"
-
-while IFS='|' read -r other_role other_pane; do
-    [[ -z "$other_role" ]] && continue
-
-    # inbox 通知
-    NOTIFY_ID="sys-leave-$(date +%s)-${ROLE_NAME}"
-    mkdir -p "${MESSAGES_DIR}/inbox/${other_role}"
-    jq -n \
-        --arg id "$NOTIFY_ID" \
-        --arg from "system" \
-        --arg to "$other_role" \
-        --arg content "$LEAVE_MSG" \
-        --arg timestamp "$(get_timestamp)" \
-        --arg status "pending" \
-        --arg priority "high" \
-        '{id:$id, from:$from, to:$to, content:$content, timestamp:$timestamp, status:$status, reply_to:null, priority:$priority}' \
-        > "${MESSAGES_DIR}/inbox/${other_role}/${NOTIFY_ID}.json"
-
-    # paste-buffer 尽力推送
-    PANE_NOTIFY="[Swarm 系统通知] $ROLE_NAME 已离开蜂群。${REASON:+原因: $REASON。}执行 swarm-msg.sh list-roles 查看当前团队。"
-    NOTIFY_TMP=$(mktemp "${RUNTIME_DIR}/.notify-XXXXXX.txt")
-    printf '%s' "$PANE_NOTIFY" > "$NOTIFY_TMP"
-    tmux load-buffer "$NOTIFY_TMP"
-    tmux paste-buffer -t "$SESSION_NAME:$other_pane" 2>/dev/null || true
-    sleep 0.3
-    tmux send-keys -t "$SESSION_NAME:$other_pane" Enter 2>/dev/null || true
-    rm -f "$NOTIFY_TMP"
-
-done < <(jq -r '.panes[] | "\(.role)|\(.pane)"' "$STATE_FILE" 2>/dev/null)
+# 5. 通知其他角色（使用共享双通道通知函数）
+notify_all_roles "leave" \
+    "角色 $ROLE_NAME 已离开蜂群。${REASON:+原因: $REASON。}该角色的职责需要由其他成员承担，执行 swarm-msg.sh list-roles 查看当前团队。" \
+    "[Swarm 系统通知] $ROLE_NAME 已离开蜂群。${REASON:+原因: $REASON。}执行 swarm-msg.sh list-roles 查看当前团队。"
 
 # 6. 发射事件
 emit_event "role.left" "$ROLE_NAME" "reason=${REASON:-manual}" "pane=$PANE_TARGET"

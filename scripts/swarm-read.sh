@@ -92,7 +92,7 @@ check_dependencies() {
 
     if [[ ${#missing[@]} -gt 0 ]]; then
         error "缺少依赖: ${missing[*]}"
-        error "请使用 brew install ${missing[*]} 安装"
+        error "请通过系统包管理器安装: ${missing[*]}"
         exit 1
     fi
 }
@@ -192,7 +192,7 @@ follow_pane_output() {
 
         # 计算哈希值
         local current_hash
-        current_hash=$(echo "$current_output" | md5)
+        current_hash=$(echo "$current_output" | md5sum 2>/dev/null | cut -d' ' -f1 || md5 2>/dev/null)
 
         # 如果内容有变化,显示新内容
         if [[ "$current_hash" != "$last_hash" ]]; then

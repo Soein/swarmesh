@@ -58,7 +58,7 @@ stage()   { echo -e "\n\033[1;35m━━━ $* ━━━\033[0m" >&2; }
 create_workflow_state() {
     local wf_file="$1"
     local requirement="$2"
-    local wf_id="wf-$(date +%s)"
+    local wf_id="wf-$(date +%s)-$$-${RANDOM}"
 
     mkdir -p "$WF_STATE_DIR"
 

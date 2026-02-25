@@ -270,45 +270,9 @@ while IFS='|' read -r r_name r_alias; do
     TEAM_INFO+=$'\n'
 done < <(jq -r '.panes[] | "\(.role)|\(.alias // "")"' "$STATE_FILE")
 
-INIT_MSG="请读取你的角色配置文件: $CONFIG_FILE 并确认你已理解角色定义。
-
-## 并行开发
-你在独立的 git worktree 中工作，分支: $ROLE_BRANCH
-你的代码修改不会与其他角色冲突。完成后由人类决定合并。
-
-## 当前团队成员
-${TEAM_INFO}
-注意: 只与上述团队成员沟通。如果任务需要的角色不在团队中,你需要自行承担该部分职责。
-你可以随时执行 swarm-msg.sh list-roles 查看最新在线角色。
-
-## Swarm 协作工具
-消息（点对点）:
-- 发送消息: swarm-msg.sh send <角色名> \"消息内容\"
-- 回复消息: swarm-msg.sh reply <消息ID> \"回复内容\"
-- 查看收件箱: swarm-msg.sh read
-- 等待消息: swarm-msg.sh wait --timeout 60
-- 查看在线角色: swarm-msg.sh list-roles
-- 广播消息: swarm-msg.sh broadcast \"消息内容\"
-
-任务队列（中心队列，任何角色可认领）:
-- 发布任务: swarm-msg.sh publish <类型> \"标题\" --description \"详情\"
-- 查看待认领: swarm-msg.sh list-tasks
-- 认领任务: swarm-msg.sh claim <任务ID>
-- 完成任务: swarm-msg.sh complete-task <任务ID> \"结果\"
-
-开发完成后你的代码会自动 commit 到分支。如需审核,执行:
-  swarm-msg.sh publish review \"审核标题\" --description \"变更说明\"
-
-当你判断任务涉及其他角色的职责时,主动用 swarm-msg.sh send 联系他们。收到消息后请及时处理并回复。"
-
-INIT_TMP=$(mktemp "${RUNTIME_DIR}/.init-XXXXXX.txt")
-printf '%s' "$INIT_MSG" > "$INIT_TMP"
-tmux load-buffer "$INIT_TMP"
-tmux paste-buffer -t "$SESSION_NAME:$PANE_TARGET"
-sleep 0.3
-tmux send-keys -t "$SESSION_NAME:$PANE_TARGET" Enter
-rm -f "$INIT_TMP"
-sleep 1
+# 使用共享函数构建并发送初始化消息
+INIT_MSG=$(build_init_message "$CONFIG_FILE" "$ROLE_BRANCH" "$TEAM_INFO")
+send_init_to_pane "$PANE_TARGET" "$INIT_MSG"
 
 # =============================================================================
 # 启用日志 + Watcher
@@ -365,45 +329,11 @@ refresh_all_contexts "$STATE_FILE"
 
 log_info "通知现有角色..."
 
-NOTIFICATION_CONTENT="新角色 $ROLE 已加入蜂群 (CLI: $CLI_CMD, 配置: $CONFIG_PATH)。你现在可以用 swarm-msg.sh send $ROLE \"消息\" 与该角色沟通。执行 swarm-msg.sh list-roles 查看完整团队。"
-
-# 双通道通知: inbox 消息(持久可靠) + paste-buffer(尽力即时推送)
-while IFS='|' read -r existing_role existing_pane; do
-    [[ "$existing_role" == "$ROLE" ]] && continue
-
-    # 通道 1: 写入收件箱（可靠，CLI 空闲后 swarm-msg.sh read 必能看到）
-    NOTIFY_ID="sys-join-$(date +%s)-${ROLE}"
-    mkdir -p "${MESSAGES_DIR}/inbox/${existing_role}"
-    jq -n \
-        --arg id "$NOTIFY_ID" \
-        --arg from "system" \
-        --arg to "$existing_role" \
-        --arg content "$NOTIFICATION_CONTENT" \
-        --arg timestamp "$(get_timestamp)" \
-        --arg status "pending" \
-        --arg priority "high" \
-        '{
-            id: $id,
-            from: $from,
-            to: $to,
-            content: $content,
-            timestamp: $timestamp,
-            status: $status,
-            reply_to: null,
-            priority: $priority
-        }' > "${MESSAGES_DIR}/inbox/${existing_role}/${NOTIFY_ID}.json"
-
-    # 通道 2: paste-buffer 尽力推送（CLI 忙时可能无效，但空闲时能即时看到）
-    PANE_NOTIFICATION="[Swarm 系统通知] 新角色 $ROLE 已加入蜂群。执行 swarm-msg.sh list-roles 查看团队，swarm-msg.sh read 查看详情。"
-    NOTIFY_TMP=$(mktemp "${RUNTIME_DIR}/.notify-XXXXXX.txt")
-    printf '%s' "$PANE_NOTIFICATION" > "$NOTIFY_TMP"
-    tmux load-buffer "$NOTIFY_TMP"
-    tmux paste-buffer -t "$SESSION_NAME:$existing_pane"
-    sleep 0.3
-    tmux send-keys -t "$SESSION_NAME:$existing_pane" Enter
-    rm -f "$NOTIFY_TMP"
-
-done < <(jq -r '.panes[] | select(.role != "'"$ROLE"'") | "\(.role)|\(.pane)"' "$STATE_FILE")
+# 使用共享双通道通知函数
+notify_all_roles "join" \
+    "新角色 $ROLE 已加入蜂群 (CLI: $CLI_CMD, 配置: $CONFIG_PATH)。你现在可以用 swarm-msg.sh send $ROLE \"消息\" 与该角色沟通。执行 swarm-msg.sh list-roles 查看完整团队。" \
+    "[Swarm 系统通知] 新角色 $ROLE 已加入蜂群。执行 swarm-msg.sh list-roles 查看团队，swarm-msg.sh read 查看详情。" \
+    "$ROLE"
 
 # 发射事件（也供 swarm-msg.sh wait 感知）
 emit_event "role.joined" "$ROLE" "cli=$CLI_CMD" "config=$CONFIG_PATH" "pane=$PANE_TARGET"

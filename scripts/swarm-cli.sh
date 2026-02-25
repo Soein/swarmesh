@@ -180,7 +180,7 @@ cmd_start() {
 
     local cmd=("$SCRIPTS_DIR/swarm-start.sh" --project "$project" --profile "$profile")
     [[ -n "$hidden" ]] && cmd+=("$hidden")
-    [[ ${#EXTRA_ARGS[@]:-0} -gt 0 ]] && cmd+=("${EXTRA_ARGS[@]}")
+    [[ ${#EXTRA_ARGS[@]} -gt 0 ]] && cmd+=("${EXTRA_ARGS[@]}")
 
     "${cmd[@]}"
 

@@ -241,16 +241,26 @@ log_info "创建 panes 并启动 AI CLI..."
 
 declare -a PANE_MAPPINGS=()
 
+# 预提取所有角色信息到数组（单次 jq 调用代替循环内 N*7 次 jq）
+declare -a ALL_NAMES ALL_CLIS ALL_CONFIGS ALL_ALIASES ALL_DESCS
+while IFS=$'\t' read -r _name _cli _config _alias _desc; do
+    ALL_NAMES+=("$_name")
+    ALL_CLIS+=("$_cli")
+    ALL_CONFIGS+=("$_config")
+    ALL_ALIASES+=("$_alias")
+    ALL_DESCS+=("$_desc")
+done < <(echo "$ROLES_JSON" | jq -r '.[] | [.name, .cli, .config, (.alias // ""), (.description // "")] | @tsv')
+
 for ((i=0; i<ROLES_COUNT; i++)); do
     # 计算窗口和 pane 位置
     WINDOW_IDX=$((i / PANES_PER_WINDOW))
     PANE_IN_WINDOW=$((i % PANES_PER_WINDOW))
 
-    # 读取角色信息
-    ROLE=$(echo "$ROLES_JSON" | jq -r ".[$i].name")
-    CLI=$(echo "$ROLES_JSON" | jq -r ".[$i].cli")
-    CONFIG=$(echo "$ROLES_JSON" | jq -r ".[$i].config")
-    ALIAS=$(echo "$ROLES_JSON" | jq -r ".[$i].alias // \"\"")
+    # 从预提取数组读取角色信息（零 jq 调用）
+    ROLE="${ALL_NAMES[$i]}"
+    CLI="${ALL_CLIS[$i]}"
+    CONFIG="${ALL_CONFIGS[$i]}"
+    ALIAS="${ALL_ALIASES[$i]}"
 
     log_info "  [$i] $ROLE → $CLI (window: $WINDOW_IDX, pane: $PANE_IN_WINDOW)"
 
@@ -293,16 +303,13 @@ for ((i=0; i<ROLES_COUNT; i++)); do
     if [[ -f "$CONFIG_FILE" ]]; then
         log_info "      发送配置: $CONFIG"
 
-        # 构建团队成员信息（含职责描述，帮助 CLI 判断该找谁）
+        # 构建团队成员信息（从预提取数组读取，零 jq 调用）
         TEAM_INFO=""
         for ((j=0; j<ROLES_COUNT; j++)); do
             [[ $j -eq $i ]] && continue  # 跳过自己
-            R_NAME=$(echo "$ROLES_JSON" | jq -r ".[$j].name")
-            R_ALIAS=$(echo "$ROLES_JSON" | jq -r ".[$j].alias // \"\"")
-            R_DESC=$(echo "$ROLES_JSON" | jq -r ".[$j].description // \"\"")
-            TEAM_INFO+="  - $R_NAME"
-            [[ -n "$R_ALIAS" ]] && TEAM_INFO+=" ($R_ALIAS)"
-            [[ -n "$R_DESC" ]] && TEAM_INFO+=": $R_DESC"
+            TEAM_INFO+="  - ${ALL_NAMES[$j]}"
+            [[ -n "${ALL_ALIASES[$j]}" ]] && TEAM_INFO+=" (${ALL_ALIASES[$j]})"
+            [[ -n "${ALL_DESCS[$j]}" ]] && TEAM_INFO+=": ${ALL_DESCS[$j]}"
             TEAM_INFO+=$'\n'
         done
 

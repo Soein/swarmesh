@@ -21,7 +21,7 @@ RUNTIME_DIR="${RUNTIME_DIR:-$SWARM_ROOT/runtime}"
 TASKS_DIR="${TASKS_DIR:-$RUNTIME_DIR/tasks}"
 
 # Tmux session 配置
-SESSION_NAME="${SESSION_NAME:-swarm}"
+SESSION_NAME="${SWARM_SESSION:-swarm}"
 
 # 状态文件
 STATE_FILE="${STATE_FILE:-$RUNTIME_DIR/state.json}"
@@ -190,7 +190,7 @@ fi
 log_info "创建任务记录..."
 
 # 生成任务 ID
-TASK_ID="task-$(get_unix_timestamp)"
+TASK_ID="task-$(get_unix_timestamp)-$$-${RANDOM}"
 
 # 创建任务 JSON
 TASK_JSON=$(jq -n \

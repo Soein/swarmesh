@@ -92,7 +92,7 @@ check_dependencies() {
 
     if [[ ${#missing[@]} -gt 0 ]]; then
         error "缺少依赖: ${missing[*]}"
-        error "请使用 brew install ${missing[*]} 安装"
+        error "请通过系统包管理器安装: ${missing[*]}"
         exit 1
     fi
 }

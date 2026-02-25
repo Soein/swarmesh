@@ -565,14 +565,14 @@ main() {
     # 移除所有 git worktree 并列出分支供人类审查
     cleanup_worktrees
 
+    # 清理 watcher 进程（在 kill session 之前，避免 watcher 访问已销毁的 pane）
+    cleanup_watchers
+
     # 发射停止事件（在 kill session 之前，确保事件写入）
     emit_event "system.stopped" "" "session=$SESSION_NAME"
 
     # 关闭 tmux session
     kill_session
-
-    # 清理 watcher 进程
-    cleanup_watchers
 
     # 清理运行时数据（可选）
     if [[ "$CLEAN_ALL" == "true" ]]; then

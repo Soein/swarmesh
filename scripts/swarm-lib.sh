@@ -26,7 +26,189 @@ if [[ -z "${SWARM_ROOT:-}" ]]; then
     fi
 fi
 RUNTIME_DIR="${RUNTIME_DIR:-$SWARM_ROOT/runtime}"
+SCRIPTS_DIR="${SCRIPTS_DIR:-$SWARM_ROOT/scripts}"
+CONFIG_DIR="${CONFIG_DIR:-$SWARM_ROOT/config}"
+MESSAGES_DIR="${MESSAGES_DIR:-$RUNTIME_DIR/messages}"
+LOGS_DIR="${LOGS_DIR:-$RUNTIME_DIR/logs}"
+TASKS_DIR="${TASKS_DIR:-$RUNTIME_DIR/tasks}"
+STATE_FILE="${STATE_FILE:-$RUNTIME_DIR/state.json}"
 EVENTS_LOG="${EVENTS_LOG:-$RUNTIME_DIR/events.jsonl}"
+SESSION_NAME="${SWARM_SESSION:-swarm}"
+
+# =============================================================================
+# 公共工具函数（所有脚本共用，消除重复定义）
+# =============================================================================
+
+# 颜色（支持非终端环境自动禁用）
+if [[ -t 2 ]]; then
+    _C_RESET='\033[0m'; _C_RED='\033[0;31m'; _C_GREEN='\033[0;32m'
+    _C_YELLOW='\033[0;33m'; _C_CYAN='\033[0;36m'
+else
+    _C_RESET=''; _C_RED=''; _C_GREEN=''; _C_YELLOW=''; _C_CYAN=''
+fi
+
+log_info()    { echo -e "${_C_CYAN}[INFO]${_C_RESET} $*" >&2; }
+log_warn()    { echo -e "${_C_YELLOW}[WARN]${_C_RESET} $*" >&2; }
+log_error()   { echo -e "${_C_RED}[ERROR]${_C_RESET} $*" >&2; }
+log_success() { echo -e "${_C_GREEN}[SUCCESS]${_C_RESET} $*" >&2; }
+die()         { log_error "$*"; exit 1; }
+
+get_timestamp() {
+    date "+%Y-%m-%d %H:%M:%S"
+}
+
+# 检查命令是否存在
+check_command() {
+    command -v "$1" &>/dev/null || die "需要安装 $1"
+}
+
+# 检查多个依赖
+check_dependencies() {
+    local missing=()
+    for cmd in "$@"; do
+        command -v "$cmd" &>/dev/null || missing+=("$cmd")
+    done
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        die "缺少必要的命令: ${missing[*]}（请通过系统包管理器安装）"
+    fi
+}
+
+# 生成唯一 ID（防碰撞: 秒+纳秒+PID+RANDOM）
+gen_unique_id() {
+    local prefix="${1:-id}"
+    echo "${prefix}-$(date +%s%N 2>/dev/null || date +%s)-$$-${RANDOM}"
+}
+
+# 解析角色名/别名到 pane 映射
+# 输出: pane_target|role_name
+resolve_role_to_pane() {
+    local role="$1"
+    local state_file="${STATE_FILE:-$RUNTIME_DIR/state.json}"
+    [[ -f "$state_file" ]] || die "state.json 不存在，蜂群未启动？"
+
+    local result
+    result=$(jq -r --arg q "$role" '
+        .panes[] |
+        select(.role == $q or (.alias // "" | split(",") | map(gsub("^\\s+|\\s+$"; "")) | index($q) != null)) |
+        "\(.pane)|\(.role)"
+    ' "$state_file" 2>/dev/null | head -1)
+
+    [[ -n "$result" ]] || die "找不到角色: $role (使用 swarm-msg.sh list-roles 查看在线角色)"
+    echo "$result"
+}
+
+# =============================================================================
+# 初始化消息构建（swarm-start.sh 和 swarm-join.sh 共用）
+# =============================================================================
+
+# 构建角色初始化消息
+# 参数:
+#   $1 - 配置文件路径
+#   $2 - 角色分支名
+#   $3 - 团队成员信息（已格式化的文本）
+build_init_message() {
+    local config_file="$1"
+    local role_branch="$2"
+    local team_info="$3"
+
+    cat <<INIT_EOF
+请读取你的角色配置文件: $config_file 并确认你已理解角色定义。
+
+## 并行开发
+你在独立的 git worktree 中工作，分支: $role_branch
+你的代码修改不会与其他角色冲突。完成后由人类决定合并。
+
+## 当前团队成员
+${team_info}
+注意: 只与上述团队成员沟通。如果任务需要的角色不在团队中,你需要自行承担该部分职责。
+你可以随时执行 swarm-msg.sh list-roles 查看最新在线角色。
+
+## Swarm 协作工具
+消息（点对点）:
+- 发送消息: swarm-msg.sh send <角色名> "消息内容"
+- 回复消息: swarm-msg.sh reply <消息ID> "回复内容"
+- 查看收件箱: swarm-msg.sh read
+- 等待消息: swarm-msg.sh wait --timeout 60
+- 查看在线角色: swarm-msg.sh list-roles
+- 广播消息: swarm-msg.sh broadcast "消息内容"
+
+任务队列（中心队列，任何角色可认领）:
+- 发布任务: swarm-msg.sh publish <类型> "标题" --description "详情"
+- 查看待认领: swarm-msg.sh list-tasks
+- 认领任务: swarm-msg.sh claim <任务ID>
+- 完成任务: swarm-msg.sh complete-task <任务ID> "结果"
+
+开发完成后你的代码会自动 commit 到分支。如需审核,执行:
+  swarm-msg.sh publish review "审核标题" --description "变更说明"
+
+当你判断任务涉及其他角色的职责时,主动用 swarm-msg.sh send 联系他们。收到消息后请及时处理并回复。
+INIT_EOF
+}
+
+# 通过 tmux paste-buffer 发送初始化消息到 pane
+send_init_to_pane() {
+    local pane_target="$1"
+    local init_msg="$2"
+
+    local init_tmp
+    init_tmp=$(mktemp "${RUNTIME_DIR}/.init-XXXXXX.txt")
+    printf '%s' "$init_msg" > "$init_tmp"
+    tmux load-buffer "$init_tmp"
+    tmux paste-buffer -t "${SESSION_NAME}:${pane_target}"
+    sleep 0.3
+    tmux send-keys -t "${SESSION_NAME}:${pane_target}" Enter
+    rm -f "$init_tmp"
+    sleep 1
+}
+
+# =============================================================================
+# 双通道通知（inbox + paste-buffer，swarm-join.sh 和 swarm-leave.sh 共用）
+# =============================================================================
+
+# 向所有在线角色发送系统通知
+# 参数:
+#   $1 - 通知类别 (join/leave/system)
+#   $2 - inbox 完整消息内容
+#   $3 - paste-buffer 简短通知
+#   $4 - 排除的角色名（可选）
+notify_all_roles() {
+    local category="$1"
+    local inbox_content="$2"
+    local pane_content="$3"
+    local exclude_role="${4:-}"
+    local state_file="${STATE_FILE:-$RUNTIME_DIR/state.json}"
+
+    while IFS='|' read -r role_name role_pane; do
+        [[ -z "$role_name" ]] && continue
+        [[ "$role_name" == "$exclude_role" ]] && continue
+
+        # 通道 1: 写入收件箱（可靠持久）
+        local notify_id
+        notify_id="sys-${category}-$(date +%s)-${RANDOM}"
+        mkdir -p "${MESSAGES_DIR}/inbox/${role_name}"
+        jq -n \
+            --arg id "$notify_id" \
+            --arg from "system" \
+            --arg to "$role_name" \
+            --arg content "$inbox_content" \
+            --arg timestamp "$(get_timestamp)" \
+            --arg status "pending" \
+            --arg priority "high" \
+            '{id:$id, from:$from, to:$to, content:$content, timestamp:$timestamp, status:$status, reply_to:null, priority:$priority}' \
+            > "${MESSAGES_DIR}/inbox/${role_name}/${notify_id}.json"
+
+        # 通道 2: paste-buffer 尽力即时推送
+        local notify_tmp
+        notify_tmp=$(mktemp "${RUNTIME_DIR}/.notify-XXXXXX.txt")
+        printf '%s' "$pane_content" > "$notify_tmp"
+        tmux load-buffer "$notify_tmp"
+        tmux paste-buffer -t "${SESSION_NAME}:${role_pane}" 2>/dev/null || true
+        sleep 0.3
+        tmux send-keys -t "${SESSION_NAME}:${role_pane}" Enter 2>/dev/null || true
+        rm -f "$notify_tmp"
+
+    done < <(jq -r '.panes[] | "\(.role)|\(.pane)"' "$state_file" 2>/dev/null)
+}
 
 # =============================================================================
 # state.json 原子更新（flock 文件锁）
@@ -69,24 +251,24 @@ emit_event() {
     local role="${2:-}"
     shift 2 2>/dev/null || shift $#
 
-    # 构建 data JSON（从 key=value 参数）
-    local data="{}"
+    # 构建 data JSON（从 key=value 参数，单次 jq 调用）
+    local jq_args=(--arg ts "$(date '+%Y-%m-%dT%H:%M:%S')" --arg type "$type" --arg role "$role")
+    local data_expr="{"
+    local first=true
     for kv in "$@"; do
-        local k="${kv%%=*}" v="${kv#*=}"
-        data=$(echo "$data" | jq --arg k "$k" --arg v "$v" '. + {($k): $v}')
+        local k="${kv%%=*}"
+        local v="${kv#*=}"
+        jq_args+=(--arg "kv_${k}" "$v")
+        $first || data_expr+=","
+        data_expr+="(\"$k\"):\$kv_${k}"
+        first=false
     done
+    data_expr+="}"
 
-    # 构建完整事件 JSON
+    # 单次 jq 调用构建完整事件 JSON，flock 保护并发追加
     local event
-    event=$(jq -nc \
-        --arg ts "$(date '+%Y-%m-%dT%H:%M:%S')" \
-        --arg type "$type" \
-        --arg role "$role" \
-        --argjson data "$data" \
-        '{ts:$ts, type:$type, role:$role, data:$data}')
-
-    # 原子追加到事件日志（tail -f 通过 kqueue/inotify 即时感知）
-    echo "$event" >> "$EVENTS_LOG"
+    event=$(jq -nc "${jq_args[@]}" "{ts:\$ts, type:\$type, role:\$role, data:$data_expr}")
+    (flock -x 200; echo "$event" >> "$EVENTS_LOG") 200>"${EVENTS_LOG}.lock"
 }
 
 # =============================================================================
