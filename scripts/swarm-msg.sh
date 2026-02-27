@@ -637,9 +637,15 @@ _check_and_unblock() {
         if _deps_all_met "$deps"; then
             local tid
             tid=$(jq -r '.id' "$blocked_file")
-            jq '.blocked = false | .status = "pending"' "$blocked_file" \
-                > "$TASKS_DIR/pending/$tid.json"
-            rm -f "$blocked_file"
+            mkdir -p "$TASKS_DIR/pending"
+            if mv "$blocked_file" "$TASKS_DIR/pending/$tid.json" 2>/dev/null; then
+                local tmp_unblock="$TASKS_DIR/pending/${tid}.json.tmp"
+                jq '.blocked = false | .status = "pending"' \
+                    "$TASKS_DIR/pending/$tid.json" > "$tmp_unblock" \
+                    && mv "$tmp_unblock" "$TASKS_DIR/pending/$tid.json"
+            else
+                continue  # 被其他进程抢先处理
+            fi
 
             emit_event "task.unblocked" "" "task_id=$tid" "unblocked_by=$completed_task_id"
             info "任务已解除阻塞: $tid"
