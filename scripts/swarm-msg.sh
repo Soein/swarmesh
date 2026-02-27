@@ -669,54 +669,58 @@ _check_group_completion() {
     local group_file="$TASKS_DIR/groups/$group_id.json"
     [[ -f "$group_file" ]] || return 0
 
-    # 统计组内任务完成情况
-    local completed=0 total=0
-    while IFS= read -r tid; do
-        [[ -z "$tid" ]] && continue
-        ((total++)) || true
-        [[ -f "$TASKS_DIR/completed/$tid.json" ]] && ((completed++)) || true
-    done < <(jq -r '.tasks[]' "$group_file" 2>/dev/null)
+    (
+        flock -x 200
 
-    # 更新 group 进度
-    local tmp="${group_file}.tmp"
-    jq --argjson c "$completed" --argjson t "$total" \
-        '.completed_count = $c | .total_count = $t' \
-        "$group_file" > "$tmp" && mv "$tmp" "$group_file"
+        # 统计组内任务完成情况
+        local completed=0 total=0
+        while IFS= read -r tid; do
+            [[ -z "$tid" ]] && continue
+            ((total++)) || true
+            [[ -f "$TASKS_DIR/completed/$tid.json" ]] && ((completed++)) || true
+        done < <(jq -r '.tasks[]' "$group_file" 2>/dev/null)
 
-    # 全部完成？
-    if [[ $completed -eq $total && $total -gt 0 ]]; then
-        jq '.status = "completed"' "$group_file" > "$tmp" && mv "$tmp" "$group_file"
+        # 更新 group 进度
+        local tmp="${group_file}.tmp"
+        jq --argjson c "$completed" --argjson t "$total" \
+            '.completed_count = $c | .total_count = $t' \
+            "$group_file" > "$tmp" && mv "$tmp" "$group_file"
 
-        local group_title from_role
-        group_title=$(jq -r '.title' "$group_file")
-        from_role=$(jq -r '.from' "$group_file")
+        # 全部完成？
+        if [[ $completed -eq $total && $total -gt 0 ]]; then
+            jq '.status = "completed"' "$group_file" > "$tmp" && mv "$tmp" "$group_file"
 
-        emit_event "group.completed" "$from_role" "group_id=$group_id" "title=$group_title"
+            local group_title from_role
+            group_title=$(jq -r '.title' "$group_file")
+            from_role=$(jq -r '.from' "$group_file")
 
-        # 标记 Story 为已完成
-        _story_mark_completed "$group_id"
+            emit_event "group.completed" "$from_role" "group_id=$group_id" "title=$group_title"
 
-        # 双通道通知主控
-        local notify_id="sys-group-done-$(date +%s)-${group_id}"
-        mkdir -p "${INBOX_DIR}/${from_role}"
-        jq -n \
-            --arg id "$notify_id" \
-            --arg from "system" \
-            --arg to "$from_role" \
-            --arg content "[任务组完成] $group_title (ID: $group_id)\n全部 $total 个任务已完成。执行 swarm-msg.sh group-status $group_id 查看详情。" \
-            --arg timestamp "$(date '+%Y-%m-%d %H:%M:%S')" \
-            --arg status "pending" \
-            --arg priority "high" \
-            '{id:$id, from:$from, to:$to, content:$content, timestamp:$timestamp, status:$status, reply_to:null, priority:$priority}' \
-            > "${INBOX_DIR}/${from_role}/${notify_id}.json"
+            # 标记 Story 为已完成
+            _story_mark_completed "$group_id"
 
-        local from_pane
-        from_pane=$(jq -r --arg role "$from_role" '.panes[] | select(.role == $role) | .pane' "$STATE_FILE" 2>/dev/null || echo "")
-        [[ -n "$from_pane" ]] && push_to_pane "$from_pane" \
-            "[任务组完成] $group_title ($completed/$total 全部完成)" 2>/dev/null || true
+            # 双通道通知主控
+            local notify_id="sys-group-done-$(date +%s)-${group_id}"
+            mkdir -p "${INBOX_DIR}/${from_role}"
+            jq -n \
+                --arg id "$notify_id" \
+                --arg from "system" \
+                --arg to "$from_role" \
+                --arg content "[任务组完成] $group_title (ID: $group_id)\n全部 $total 个任务已完成。执行 swarm-msg.sh group-status $group_id 查看详情。" \
+                --arg timestamp "$(date '+%Y-%m-%d %H:%M:%S')" \
+                --arg status "pending" \
+                --arg priority "high" \
+                '{id:$id, from:$from, to:$to, content:$content, timestamp:$timestamp, status:$status, reply_to:null, priority:$priority}' \
+                > "${INBOX_DIR}/${from_role}/${notify_id}.json"
 
-        info "任务组全部完成: $group_id ($group_title)"
-    fi
+            local from_pane
+            from_pane=$(jq -r --arg role "$from_role" '.panes[] | select(.role == $role) | .pane' "$STATE_FILE" 2>/dev/null || echo "")
+            [[ -n "$from_pane" ]] && push_to_pane "$from_pane" \
+                "[任务组完成] $group_title ($completed/$total 全部完成)" 2>/dev/null || true
+
+            info "任务组全部完成: $group_id ($group_title)"
+        fi
+    ) 200>"${group_file}.lock"
 }
 
 # =============================================================================
