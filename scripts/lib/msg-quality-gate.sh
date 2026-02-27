@@ -17,6 +17,7 @@
 _MSG_QUALITY_GATE_LOADED=1
 
 GATE_LOGS_DIR="${GATE_LOGS_DIR:-$RUNTIME_DIR/gate-logs}"
+GATE_TIMEOUT="${GATE_TIMEOUT:-120}"
 
 # 不需要质量门检查的任务类型（可通过环境变量覆盖）
 SKIP_GATE_TYPES="${SKIP_GATE_TYPES:-review design architecture audit document plan}"
@@ -133,8 +134,8 @@ _run_quality_gate() {
         } >> "$log_file"
 
         local exit_code=0
-        # 在 worktree 目录下执行，超时 120 秒
-        if timeout 120 bash -c "cd '$worktree' && $check_cmd" >> "$log_file" 2>&1; then
+        # 在 worktree 目录下执行
+        if timeout "$GATE_TIMEOUT" bash -c "cd '$worktree' && $check_cmd" >> "$log_file" 2>&1; then
             echo "[PASS] $check_name" >> "$log_file"
             info "[质量门] $check_name: 通过"
         else

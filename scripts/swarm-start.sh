@@ -360,6 +360,16 @@ tmux select-window -t "$SESSION_NAME:0"
 log_success "所有 panes 创建完成"
 
 # =============================================================================
+# 启动任务看门狗
+# =============================================================================
+
+# 加载 watchdog 模块（需要 swarm-lib.sh 已加载）
+source "${SCRIPT_DIR}/lib/msg-task-watchdog.sh"
+
+WATCHDOG_PID=$(start_task_watchdog)
+log_info "任务看门狗 PID: $WATCHDOG_PID"
+
+# =============================================================================
 # 保存运行状态
 # =============================================================================
 
@@ -377,6 +387,7 @@ STATE_JSON=$(jq -n \
     --argjson panes_per_window "$PANES_PER_WINDOW" \
     --argjson window_count "$WINDOW_COUNT" \
     --argjson max_cli "$MAX_CLI" \
+    --argjson watchdog_pid "$WATCHDOG_PID" \
     --argjson panes "$PANES_JSON" \
     '{
         session: $session,
@@ -388,6 +399,7 @@ STATE_JSON=$(jq -n \
         panes_per_window: $panes_per_window,
         window_count: $window_count,
         max_cli: $max_cli,
+        watchdog_pid: $watchdog_pid,
         panes: $panes
     }')
 

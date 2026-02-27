@@ -92,21 +92,6 @@ EOF
 # 核心功能函数
 ################################################################################
 
-# 检查必要的命令是否存在
-check_dependencies() {
-    local missing_deps=()
-
-    for cmd in tmux jq date; do
-        if ! command -v "$cmd" &> /dev/null; then
-            missing_deps+=("$cmd")
-        fi
-    done
-
-    if [[ ${#missing_deps[@]} -gt 0 ]]; then
-        die "缺少必要的命令: ${missing_deps[*]}"
-    fi
-}
-
 # 检查 tmux session 是否存在
 check_session_exists() {
     if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
@@ -342,6 +327,23 @@ archive_logs() {
     fi
 }
 
+# 清理任务看门狗进程
+cleanup_watchdog() {
+    if [[ -f "$STATE_FILE" ]]; then
+        local watchdog_pid
+        watchdog_pid=$(jq -r '.watchdog_pid // empty' "$STATE_FILE" 2>/dev/null || true)
+        if [[ -n "$watchdog_pid" ]]; then
+            log_info "停止任务看门狗进程 (PID: $watchdog_pid)..."
+            if kill -0 "$watchdog_pid" 2>/dev/null; then
+                kill "$watchdog_pid" 2>/dev/null || true
+                log_success "看门狗进程已停止"
+            else
+                log_info "看门狗进程已不存在，跳过"
+            fi
+        fi
+    fi
+}
+
 # 清理 pane watcher 守护进程
 cleanup_watchers() {
     if [[ -f "$STATE_FILE" ]]; then
@@ -498,7 +500,7 @@ main() {
     done
 
     # 检查依赖
-    check_dependencies
+    check_dependencies tmux jq date
 
     # 检查会话是否存在
     if ! check_session_exists; then
@@ -523,6 +525,12 @@ main() {
     log_info "开始停止蜂群系统..."
     echo ""
 
+    # 停止任务看门狗进程（在 save_final_state 之前，确保 state.json 完整可读）
+    cleanup_watchdog
+
+    # 清理 watcher 进程（在 kill session 之前，避免 watcher 访问已销毁的 pane）
+    cleanup_watchers
+
     # 保存最终状态
     save_final_state
 
@@ -534,9 +542,6 @@ main() {
 
     # 移除所有 git worktree 并列出分支供人类审查
     cleanup_worktrees
-
-    # 清理 watcher 进程（在 kill session 之前，避免 watcher 访问已销毁的 pane）
-    cleanup_watchers
 
     # 发射停止事件（在 kill session 之前，确保事件写入）
     emit_event "system.stopped" "" "session=$SESSION_NAME"

@@ -128,13 +128,18 @@ _check_and_unblock() {
             local tid
             tid=$(jq -r '.id' "$blocked_file")
             mkdir -p "$TASKS_DIR/pending"
-            if mv "$blocked_file" "$TASKS_DIR/pending/$tid.json" 2>/dev/null; then
-                local tmp_unblock="$TASKS_DIR/pending/${tid}.json.tmp"
-                jq '.blocked = false | .status = "pending"' \
-                    "$TASKS_DIR/pending/$tid.json" > "$tmp_unblock" \
-                    && mv "$tmp_unblock" "$TASKS_DIR/pending/$tid.json"
+            # 先更新字段到 tmp，再原子 mv 到 pending（避免中间状态可见）
+            local tmp_unblock="$TASKS_DIR/blocked/${tid}.json.tmp"
+            if jq '.blocked = false | .status = "pending"' "$blocked_file" > "$tmp_unblock" 2>/dev/null; then
+                if mv "$tmp_unblock" "$TASKS_DIR/pending/$tid.json" 2>/dev/null; then
+                    rm -f "$blocked_file"
+                else
+                    rm -f "$tmp_unblock"
+                    continue  # 被其他进程抢先处理
+                fi
             else
-                continue  # 被其他进程抢先处理
+                rm -f "$tmp_unblock"
+                continue  # jq 失败
             fi
 
             emit_event "task.unblocked" "" "task_id=$tid" "unblocked_by=$completed_task_id"
@@ -142,9 +147,9 @@ _check_and_unblock() {
 
             # 通知：新任务可认领（包含完整描述，尊重 assigned_to）
             local t_meta t_title t_type t_from t_branch t_assign t_desc
-            t_meta=$(jq -r '[.title, .type, .from, (.branch // ""), (.assigned_to // "")] | @tsv' \
+            t_meta=$(jq -r '[.title, .type, .from, (.branch // ""), (.assigned_to // "")] | join("\u0001")' \
                 "$TASKS_DIR/pending/$tid.json")
-            IFS=$'\t' read -r t_title t_type t_from t_branch t_assign <<< "$t_meta"
+            IFS=$'\001' read -r t_title t_type t_from t_branch t_assign <<< "$t_meta"
             t_desc=$(jq -r '.description // ""' "$TASKS_DIR/pending/$tid.json")
 
             local notify_msg="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -233,6 +238,7 @@ _check_group_completion() {
                 '{id:$id, from:$from, to:$to, content:$content, timestamp:$timestamp, status:$status, reply_to:null, priority:$priority}' \
                 > "${INBOX_DIR}/${from_role}/${notify_id}.json"
 
+            # TODO: push_to_pane 涉及 tmux 调用，理想情况应移到 flock 外以缩短锁持有时间
             local from_pane
             from_pane=$(jq -r --arg role "$from_role" '.panes[] | select(.role == $role) | .pane' "$STATE_FILE" 2>/dev/null || echo "")
             [[ -n "$from_pane" ]] && push_to_pane "$from_pane" \

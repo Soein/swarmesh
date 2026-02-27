@@ -47,6 +47,7 @@ source "${SCRIPT_DIR}/swarm-lib.sh"
 source "${SCRIPT_DIR}/lib/msg-story.sh"
 source "${SCRIPT_DIR}/lib/msg-quality-gate.sh"
 source "${SCRIPT_DIR}/lib/msg-task-queue.sh"
+source "${SCRIPT_DIR}/lib/msg-task-watchdog.sh"
 
 # =============================================================================
 # 工具函数
@@ -332,10 +333,8 @@ cmd_wait() {
     touch "$EVENTS_LOG"
 
     # 使用 tail -f 事件驱动，零 CPU 轮询
-    local tail_pid=""
     exec 3< <(tail -f "$EVENTS_LOG" 2>/dev/null)
-    tail_pid=$!
-    trap "kill $tail_pid 2>/dev/null; exec 3<&-" RETURN
+    trap "exec 3<&-" RETURN
 
     while true; do
         local remaining=$(( timeout - ($(date +%s) - start_time) ))
@@ -499,7 +498,7 @@ cmd_mark_read() {
 # =============================================================================
 
 cmd_cleanup() {
-    local ttl=3600
+    local ttl="${CLEANUP_TTL:-3600}"
     local dry_run=false
 
     while [[ $# -gt 0 ]]; do
