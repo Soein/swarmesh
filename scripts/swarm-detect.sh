@@ -49,22 +49,6 @@ die() { echo "[ERROR] $*" >&2; exit 2; }
 
 log() { [[ "$JSON_OUTPUT" == "false" ]] && echo "[detect] $*" >&2 || true; }
 
-# 解析角色到 pane target
-resolve_role() {
-    local role="$1"
-    [[ -f "$STATE_FILE" ]] || die "state.json 不存在，蜂群未启动？"
-
-    local pane_info
-    pane_info=$(jq -r --arg q "$role" '
-        .panes[] |
-        select(.role == $q or (.alias // "" | split(",") | index($q))) |
-        "\(.pane)|\(.role)|\(.cli)|\(.log)"
-    ' "$STATE_FILE" | head -1)
-
-    [[ -n "$pane_info" ]] || die "找不到角色: $role"
-    echo "$pane_info"
-}
-
 # 获取日志文件最后修改时间（epoch 秒）
 get_file_mtime() {
     local file="$1"
@@ -84,7 +68,7 @@ detect_completion() {
 
     # 解析角色信息
     local info
-    info=$(resolve_role "$role")
+    info=$(resolve_role_full "$role")
     local pane_target cli log_file
     pane_target=$(echo "$info" | cut -d'|' -f1)
     local role_name

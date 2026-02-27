@@ -61,16 +61,6 @@ JSON_OUTPUT=false
 info() { echo -e "\033[0;34m[relay]\033[0m $*" >&2; }
 success() { echo -e "\033[0;32m[relay]\033[0m $*" >&2; }
 
-# 解析角色
-resolve_role() {
-    local role="$1"
-    jq -r --arg q "$role" '
-        .panes[] |
-        select(.role == $q or (.alias // "" | split(",") | index($q))) |
-        "\(.pane)|\(.role)|\(.cli)|\(.log)"
-    ' "$STATE_FILE" | head -1
-}
-
 # ============================================================================
 # 捕获和清理输出
 # ============================================================================
@@ -138,8 +128,8 @@ relay_message() {
 
     # 解析角色信息
     local from_info to_info
-    from_info=$(resolve_role "$from_role") || die "找不到源角色: $from_role"
-    to_info=$(resolve_role "$to_role") || die "找不到目标角色: $to_role"
+    from_info=$(resolve_role_full "$from_role") || die "找不到源角色: $from_role"
+    to_info=$(resolve_role_full "$to_role") || die "找不到目标角色: $to_role"
 
     local from_pane from_name from_cli from_log
     from_pane=$(echo "$from_info" | cut -d'|' -f1)

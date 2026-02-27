@@ -85,22 +85,6 @@ detect_my_role() {
     die "无法检测当前角色。请设置 SWARM_ROLE 环境变量。"
 }
 
-# 解析目标角色 → pane 映射
-resolve_role() {
-    local role="$1"
-    [[ -f "$STATE_FILE" ]] || die "state.json 不存在，蜂群未启动？"
-
-    local result
-    result=$(jq -r --arg q "$role" '
-        .panes[] |
-        select(.role == $q or (.alias // "" | split(",") | map(gsub("^\\s+|\\s+$"; "")) | index($q) != null)) |
-        "\(.pane)|\(.role)"
-    ' "$STATE_FILE" 2>/dev/null | head -1)
-
-    [[ -n "$result" ]] || die "找不到角色: $role (使用 swarm-msg.sh list-roles 查看在线角色)"
-    echo "$result"
-}
-
 # =============================================================================
 # 消息推送（tmux paste-buffer）
 # =============================================================================
@@ -141,7 +125,7 @@ cmd_send() {
         target_role_name="human"
     else
         local target_info
-        target_info=$(resolve_role "$to_role")
+        target_info=$(resolve_role_to_pane "$to_role")
         target_pane=$(echo "$target_info" | cut -d'|' -f1)
         target_role_name=$(echo "$target_info" | cut -d'|' -f2)
     fi
@@ -223,7 +207,7 @@ cmd_reply() {
         target_role_name="human"
     else
         local target_info
-        target_info=$(resolve_role "$from_role")
+        target_info=$(resolve_role_to_pane "$from_role")
         target_pane=$(echo "$target_info" | cut -d'|' -f1)
         target_role_name=$(echo "$target_info" | cut -d'|' -f2)
     fi

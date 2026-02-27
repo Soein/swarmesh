@@ -97,6 +97,24 @@ resolve_role_to_pane() {
     echo "$result"
 }
 
+# 解析角色名/别名到完整映射（供 relay/detect 使用）
+# 输出: pane_target|role_name|cli_command|log_file
+resolve_role_full() {
+    local role="$1"
+    local state_file="${STATE_FILE:-$RUNTIME_DIR/state.json}"
+    [[ -f "$state_file" ]] || die "state.json 不存在，蜂群未启动？"
+
+    local result
+    result=$(jq -r --arg q "$role" '
+        .panes[] |
+        select(.role == $q or (.alias // "" | split(",") | map(gsub("^\\s+|\\s+$"; "")) | index($q) != null)) |
+        "\(.pane)|\(.role)|\(.cli)|\(.log)"
+    ' "$state_file" 2>/dev/null | head -1)
+
+    [[ -n "$result" ]] || die "找不到角色: $role"
+    echo "$result"
+}
+
 # =============================================================================
 # 初始化消息构建（swarm-start.sh 和 swarm-join.sh 共用）
 # =============================================================================
