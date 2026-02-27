@@ -287,23 +287,13 @@ cmd_read() {
 
     while IFS= read -r msg_file; do
         [[ -f "$msg_file" ]] || continue
-        local id from content timestamp reply_to priority
-        id=$(jq -r '.id' "$msg_file")
-        from=$(jq -r '.from' "$msg_file")
-        content=$(jq -r '.content' "$msg_file")
-        timestamp=$(jq -r '.timestamp' "$msg_file")
-        reply_to=$(jq -r '.reply_to // ""' "$msg_file")
-        priority=$(jq -r '.priority // "normal"' "$msg_file")
-
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "  ID: $id"
-        echo "  来自: $from"
-        echo "  时间: $timestamp"
-        [[ -n "$reply_to" && "$reply_to" != "null" ]] && echo "  回复: $reply_to"
-        [[ "$priority" != "normal" ]] && echo "  优先级: $priority"
-        echo "  内容: $content"
-        echo ""
-        echo "  回复: swarm-msg.sh reply $id \"你的回复\""
+        jq -r '
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+            "  ID: \(.id)\n  来自: \(.from)\n  时间: \(.timestamp)\n" +
+            (if .reply_to and .reply_to != "" and .reply_to != null then "  回复: \(.reply_to)\n" else "" end) +
+            (if (.priority // "normal") != "normal" then "  优先级: \(.priority)\n" else "" end) +
+            "  内容: \(.content)\n\n  回复: swarm-msg.sh reply \(.id) \"你的回复\""
+        ' "$msg_file"
     done <<< "$msg_files"
 
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
