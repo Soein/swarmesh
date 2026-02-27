@@ -132,6 +132,38 @@ swarm-msg.sh task take <task-id>
 ./scripts/swarm-leave.sh database --reason "数据库设计已完成"
 ```
 
+## 质量保障
+
+### 项目扫描
+
+启动时自动扫描目标项目结构，收集关键配置文件（`package.json`、`go.mod`、`Cargo.toml` 等）信息到 `runtime/project-info.json`。脚本只收集原始事实，LLM 角色自行解读技术栈。
+
+### Story 文件
+
+每个任务组自动生成 Story 文件（`runtime/stories/<group-id>.json`），记录子任务状态、验收记录和进度时间线。数据用 JSON 存储，展示时渲染为 markdown：
+
+```bash
+swarm-msg.sh story-view <group-id>
+```
+
+### 质量门
+
+工蜂 `complete-task` 时自动执行验证命令（build/test/lint），检查失败则任务保持 processing，工蜂需修复后重新提交。
+
+验证命令三层优先级（低→高）：
+1. **运行时**: `runtime/project-info.json` 的 `verify_commands`（inspector 通过 `set-verify` 配置）
+2. **项目级**: `.swarm/verify.json`（用户手动创建）
+3. **任务级**: `publish --verify '{"test":"go test ./..."}'`（发布任务时指定）
+
+```bash
+# inspector 按角色配置验证命令
+swarm-msg.sh set-verify '{"build":"go build ./...","test":"go test ./..."}' --role backend
+swarm-msg.sh set-verify '{"build":"npm run build","test":"npm test"}' --role frontend
+
+# 或发布任务时指定
+swarm-msg.sh publish develop "实现 API" --verify '{"build":"go build ./..."}'
+```
+
 ## 项目结构
 
 ```
@@ -141,6 +173,7 @@ swarmesh/
 │   ├── swarm-start.sh       # 启动蜂群
 │   ├── swarm-stop.sh        # 停止蜂群
 │   ├── swarm-msg.sh         # CLI 间消息通讯
+│   ├── swarm-scan.sh        # 项目结构扫描
 │   ├── swarm-join.sh        # 动态加入角色
 │   ├── swarm-leave.sh       # 动态移除角色
 │   ├── swarm-status.sh      # 状态查看
@@ -167,9 +200,12 @@ swarmesh/
 │   └── relay-chain.json
 └── runtime/                 # 运行时数据（gitignore）
     ├── state.json           # 蜂群状态
+    ├── project-info.json    # 项目扫描结果
     ├── logs/                # 角色日志
     ├── messages/            # inbox/outbox
     ├── tasks/               # 任务状态机
+    ├── stories/             # 任务组 Story 文件
+    ├── gate-logs/           # 质量门检查日志
     └── results/             # 任务结果
 ```
 
