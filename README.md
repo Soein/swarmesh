@@ -190,6 +190,7 @@ swarmesh/
 │       ├── msg-task-queue.sh    # 任务队列
 │       └── msg-task-watchdog.sh # 任务看门狗
 ├── config/
+│   ├── defaults.conf        # 框架默认配置（日志/质量门/看门狗/tmux 等）
 │   ├── profiles/            # 团队配置预设
 │   │   ├── minimal.json     # 3 角色最小团队
 │   │   ├── web-dev.json     # 7 角色 Web 开发团队
@@ -209,7 +210,9 @@ swarmesh/
     ├── logs/                # 角色日志
     ├── messages/            # inbox/outbox
     ├── tasks/               # 任务状态机
+    ├── pipes/               # FIFO 管道（即时通知）
     ├── stories/             # 任务组 Story 文件
+    ├── workflows/           # 工作流运行时状态
     ├── gate-logs/           # 质量门检查日志
     └── results/             # 任务结果
 ```
@@ -230,7 +233,7 @@ swarmesh/
 - **CLI 无关**：不绑定特定 AI CLI，通过 profile 配置切换
 - **角色自治**：角色通过消息系统自主协作，不依赖人类中转
 - **Git worktree 隔离**：每个角色可在独立分支上工作，避免冲突
-- **可配置不硬编码**：所有路径、参数均可通过环境变量或配置文件覆盖
+- **可配置不硬编码**：所有参数集中定义在 `config/defaults.conf`，支持三层优先级覆盖（环境变量 > 项目级 `.swarm/swarm.conf` > 默认值）
 
 ## License
 
