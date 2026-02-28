@@ -162,7 +162,7 @@ main() {
     # 4. 输出
     mkdir -p "$(dirname "$output_file")"
     jq -n \
-        --arg scanned_at "$(date '+%Y-%m-%d %H:%M:%S')" \
+        --arg scanned_at "$(get_timestamp)" \
         --arg project_dir "$project_dir" \
         --argjson file_tree "$file_tree_json" \
         --argjson key_files "$snippets_json" \

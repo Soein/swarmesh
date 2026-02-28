@@ -69,7 +69,7 @@ create_workflow_state() {
   "workflow_file": "$wf_file",
   "requirement": $(echo "$requirement" | jq -Rs .),
   "status": "running",
-  "started_at": "$(date '+%Y-%m-%d %H:%M:%S')",
+  "started_at": "$(get_timestamp)",
   "current_stage": 0,
   "tasks": {},
   "results": {}

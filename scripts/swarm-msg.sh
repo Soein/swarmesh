@@ -49,6 +49,12 @@ source "${SCRIPT_DIR}/lib/msg-quality-gate.sh"
 source "${SCRIPT_DIR}/lib/msg-task-queue.sh"
 source "${SCRIPT_DIR}/lib/msg-task-watchdog.sh"
 
+# 加载项目级配置（从 state.json 推断 PROJECT_DIR）
+if [[ -z "${PROJECT_DIR:-}" && -f "$STATE_FILE" ]]; then
+    PROJECT_DIR=$(jq -r '.project // ""' "$STATE_FILE" 2>/dev/null)
+fi
+load_project_config
+
 # =============================================================================
 # 工具函数
 # =============================================================================
@@ -498,13 +504,15 @@ cmd_mark_read() {
 # =============================================================================
 
 cmd_cleanup() {
-    local ttl="${CLEANUP_TTL:-3600}"
+    local ttl="$CLEANUP_TTL"
     local dry_run=false
+    local clean_gate=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --ttl)     ttl="$2"; shift 2 ;;
-            --dry-run) dry_run=true; shift ;;
+            --ttl)        ttl="$2"; shift 2 ;;
+            --dry-run)    dry_run=true; shift ;;
+            --gate-logs)  clean_gate=true; shift ;;
             -*) die "cleanup: 未知选项 '$1'" ;;
             *)  die "cleanup: 多余参数 '$1'" ;;
         esac
@@ -512,7 +520,7 @@ cmd_cleanup() {
 
     local now
     now=$(date +%s)
-    local cleaned_msgs=0 cleaned_tasks=0
+    local cleaned_msgs=0 cleaned_tasks=0 cleaned_gate=0
 
     # 清理 outbox/ 中超过 TTL 的已读消息
     shopt -s nullglob
@@ -521,7 +529,7 @@ cmd_cleanup() {
         for f in "$role_dir"*.json; do
             [[ -f "$f" ]] || continue
             local file_mtime
-            file_mtime=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo "0")
+            file_mtime=$(_file_mtime "$f")
             if [[ $(( now - file_mtime )) -ge $ttl ]]; then
                 if [[ "$dry_run" == true ]]; then
                     echo "[dry-run] 删除已发消息: $f"
@@ -547,11 +555,34 @@ cmd_cleanup() {
             ((cleaned_tasks++)) || true
         fi
     done
+
+    # 清理过期质量门日志（--gate-logs 时启用）
+    if [[ "$clean_gate" == true ]]; then
+        local gate_ttl="$GATE_LOG_TTL"
+        local gate_dir="${GATE_LOGS_DIR:-$RUNTIME_DIR/gate-logs}"
+        if [[ -d "$gate_dir" ]]; then
+            for f in "$gate_dir"/*.log; do
+                [[ -f "$f" ]] || continue
+                local file_mtime
+                file_mtime=$(_file_mtime "$f")
+                if [[ $(( now - file_mtime )) -ge $gate_ttl ]]; then
+                    if [[ "$dry_run" == true ]]; then
+                        echo "[dry-run] 删除质量门日志: $f"
+                    else
+                        rm -f "$f"
+                    fi
+                    ((cleaned_gate++)) || true
+                fi
+            done
+        fi
+    fi
     shopt -u nullglob
 
     local mode_label=""
     [[ "$dry_run" == true ]] && mode_label=" (dry-run)"
-    info "清理完成${mode_label}: 消息 $cleaned_msgs 条, 任务 $cleaned_tasks 个 (TTL=${ttl}s)"
+    local gate_label=""
+    [[ "$clean_gate" == true ]] && gate_label=", 质量门日志 $cleaned_gate 个"
+    info "清理完成${mode_label}: 消息 $cleaned_msgs 条, 任务 $cleaned_tasks 个${gate_label} (TTL=${ttl}s)"
 }
 
 # =============================================================================
@@ -585,7 +616,7 @@ swarm-msg.sh - CLI-to-CLI 自主消息 & 任务队列工具
   set-verify '<json>' --role <name>    设置角色级验证命令（质量门按角色执行）
   recover-tasks                        恢复卡在 processing 的任务（认领者已离线）
   set-limit [N]                        查看/设置 CLI 数量上限 (0=不限制)
-  cleanup [--ttl <秒>] [--dry-run]    清理过期已读消息和已完成任务
+  cleanup [--ttl <秒>] [--gate-logs] [--dry-run]  清理过期消息/任务/质量门日志
 
 publish 选项:
   --assign|-a <role>           指派给特定角色（只有该角色能认领，通知也只推给该角色）

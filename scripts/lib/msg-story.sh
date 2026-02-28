@@ -34,7 +34,7 @@ _create_story() {
     local group_id="$1" title="$2" from="$3"
     local story_file="$STORIES_DIR/$group_id.json"
     local now
-    now=$(date '+%Y-%m-%d %H:%M:%S')
+    now=$(get_timestamp)
 
     mkdir -p "$STORIES_DIR"
 
@@ -60,7 +60,7 @@ _create_story() {
 _story_add_task() {
     local group_id="$1" task_id="$2" title="$3" type="${4:-}" assigned_to="${5:-}" branch="${6:-}"
     local now
-    now=$(date '+%Y-%m-%d %H:%M:%S')
+    now=$(get_timestamp)
 
     local timeline_msg="$now $task_id 发布"
     [[ -n "$assigned_to" ]] && timeline_msg+=" → $assigned_to"
@@ -93,7 +93,7 @@ _story_update_task() {
     [[ -n "$group_id" ]] || return 0
 
     local now
-    now=$(date '+%Y-%m-%d %H:%M:%S')
+    now=$(get_timestamp)
 
     _story_update "$group_id" \
         '(.tasks[] | select(.id == $tid)) |= (.status = $s | .result = (if $r != "" then $r else .result end))
@@ -109,7 +109,7 @@ _story_update_task() {
 _story_add_verification() {
     local group_id="$1" task_id="$2" result="$3" checker="${4:-自动}"
     local now
-    now=$(date '+%Y-%m-%d %H:%M:%S')
+    now=$(get_timestamp)
 
     _story_update "$group_id" \
         '.verifications += [$v]' \
@@ -126,7 +126,7 @@ _story_add_verification() {
 _story_mark_completed() {
     local group_id="$1"
     local now
-    now=$(date '+%Y-%m-%d %H:%M:%S')
+    now=$(get_timestamp)
 
     _story_update "$group_id" \
         '.status = "completed" | .timeline += [$msg]' \

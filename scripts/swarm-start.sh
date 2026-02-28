@@ -27,8 +27,7 @@ DEFAULT_PROFILE="${DEFAULT_PROFILE:-minimal}"
 PROFILES_DIR="${PROFILES_DIR:-$CONFIG_DIR/profiles}"
 STATE_FILE="${STATE_FILE:-$RUNTIME_DIR/state.json}"
 
-# 每窗口最大 pane 数（控制每个 pane 的空间大小）
-PANES_PER_WINDOW="${PANES_PER_WINDOW:-2}"
+# PANES_PER_WINDOW 由 config/defaults.conf 统一定义
 
 # CLI 启动等待时间（秒）
 CLI_STARTUP_WAIT="${CLI_STARTUP_WAIT:-3}"
@@ -94,6 +93,7 @@ done
 [[ -n "$PROJECT_DIR" ]] || die "请指定项目目录 (--project <路径>)"
 # 转为绝对路径
 PROJECT_DIR="$(cd "$PROJECT_DIR" 2>/dev/null && pwd)" || die "项目目录不存在: $PROJECT_DIR"
+load_project_config  # 加载项目级配置覆盖
 
 # =============================================================================
 # 前置检查
@@ -339,7 +339,7 @@ for ((i=0; i<ROLES_COUNT; i++)); do
 
     # 启用日志记录
     LOG_FILE="$LOGS_DIR/${ROLE}.log"
-    tmux pipe-pane -t "$SESSION_NAME:$PANE_TARGET" -o "cat >> '$LOG_FILE'"
+    tmux pipe-pane -t "$SESSION_NAME:$PANE_TARGET" -o "$(_pipe_pane_cmd "$LOG_FILE")"
 
     # 启动 pane watcher 守护进程（事件驱动完成检测）
     WATCHER_PID=$(start_pane_watcher "$ROLE" "$LOG_FILE" "$PANE_TARGET" "$ROLE_WORKTREE")

@@ -36,6 +36,61 @@ EVENTS_LOG="${EVENTS_LOG:-$RUNTIME_DIR/events.jsonl}"
 SESSION_NAME="${SWARM_SESSION:-swarm}"
 
 # =============================================================================
+# 加载配置（优先级：框架默认 < 项目覆盖 < 环境变量）
+# =============================================================================
+
+# 框架默认值立即加载（:= 模式只填充未设置的变量，安全）
+_load_defaults() {
+    local defaults="$CONFIG_DIR/defaults.conf"
+    [[ -f "$defaults" ]] && source "$defaults"
+}
+
+# 在首次 source 时保存来自环境的原始值（用于 load_project_config 恢复）
+_swarm_save_env_config() {
+    local defaults="$CONFIG_DIR/defaults.conf"
+    [[ -f "$defaults" ]] || return 0
+    _SWARM_ENV_SNAPSHOT=()
+    local var
+    while IFS= read -r var; do
+        [[ -n "${!var+set}" ]] && _SWARM_ENV_SNAPSHOT+=("${var}=${!var}")
+    done < <(grep -oE '\$\{[A-Z_]+:=' "$defaults" | sed 's/\${//;s/:=//')
+}
+declare -a _SWARM_ENV_SNAPSHOT=()
+_swarm_save_env_config
+_load_defaults
+
+# 加载项目级覆盖（需在 PROJECT_DIR 设置后由调用脚本显式调用）
+# 正确实现三层优先级: 环境变量 > 项目覆盖(:=) > 框架默认(:=)
+#
+# 原理: 先 unset 所有配置变量 → 恢复环境原始值 → source 项目配置 → source 默认值
+# 由于两层都用 :=（只在未设置时赋值），先加载的优先
+load_project_config() {
+    local project_conf="${PROJECT_DIR:+$PROJECT_DIR/.swarm/swarm.conf}"
+    [[ -n "$project_conf" && -f "$project_conf" ]] || return 0
+
+    local defaults="$CONFIG_DIR/defaults.conf"
+    [[ -f "$defaults" ]] || return 0
+
+    # 1. 提取所有配置变量名并 unset
+    local var
+    while IFS= read -r var; do
+        unset "$var"
+    done < <(grep -oE '\$\{[A-Z_]+:=' "$defaults" | sed 's/\${//;s/:=//')
+
+    # 2. 恢复环境原始值（最高优先级）
+    local entry
+    for entry in "${_SWARM_ENV_SNAPSHOT[@]}"; do
+        local key="${entry%%=*}"
+        local val="${entry#*=}"
+        printf -v "$key" '%s' "$val"
+    done
+
+    # 3. 加载项目覆盖 → 框架默认（:= 先到先得）
+    source "$project_conf"
+    _load_defaults
+}
+
+# =============================================================================
 # 公共工具函数（所有脚本共用，消除重复定义）
 # =============================================================================
 
@@ -47,14 +102,24 @@ else
     _C_RESET=''; _C_RED=''; _C_GREEN=''; _C_YELLOW=''; _C_CYAN=''
 fi
 
-log_info()    { echo -e "${_C_CYAN}[INFO]${_C_RESET} $*" >&2; }
-log_warn()    { echo -e "${_C_YELLOW}[WARN]${_C_RESET} $*" >&2; }
-log_error()   { echo -e "${_C_RED}[ERROR]${_C_RESET} $*" >&2; }
-log_success() { echo -e "${_C_GREEN}[SUCCESS]${_C_RESET} $*" >&2; }
+log_info()    { echo -e "${_C_CYAN}[$(get_timestamp)] [INFO]${_C_RESET} $*" >&2; }
+log_warn()    { echo -e "${_C_YELLOW}[$(get_timestamp)] [WARN]${_C_RESET} $*" >&2; }
+log_error()   { echo -e "${_C_RED}[$(get_timestamp)] [ERROR]${_C_RESET} $*" >&2; }
+log_success() { echo -e "${_C_GREEN}[$(get_timestamp)] [SUCCESS]${_C_RESET} $*" >&2; }
 die()         { log_error "$*"; exit 1; }
 
 get_timestamp() {
-    date "+%Y-%m-%d %H:%M:%S"
+    date "+$LOG_TIMESTAMP_FORMAT"
+}
+
+# 获取文件修改时间（macOS/Linux 兼容）
+_file_mtime() {
+    stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo "0"
+}
+
+# 获取文件大小（macOS/Linux 兼容）
+_file_size() {
+    stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null || echo "0"
 }
 
 # 检查命令是否存在
@@ -312,6 +377,7 @@ emit_event() {
     shift 2 2>/dev/null || shift $#
 
     # 构建 data JSON（从 key=value 参数，单次 jq 调用）
+    # 事件日志使用固定 ISO 8601 格式，不受 LOG_TIMESTAMP_FORMAT 影响
     local jq_args=(--arg ts "$(date '+%Y-%m-%dT%H:%M:%S')" --arg type "$type" --arg role "$role")
     local data_expr="{"
     local first=true
@@ -329,6 +395,44 @@ emit_event() {
     local event
     event=$(jq -nc "${jq_args[@]}" "{ts:\$ts, type:\$type, role:\$role, data:$data_expr}")
     (flock -x 200; echo "$event" >> "$EVENTS_LOG") 200>"${EVENTS_LOG}.lock"
+}
+
+# =============================================================================
+# 日志轮转
+# =============================================================================
+
+# 通用文件轮转（按天命名: .log → .log.2026-02-28_HHmmss）
+# copy-truncate 模式: 先复制再清空原文件，无需中断写入方
+# 过期清理由看门狗的 LOG_RETENTION_TTL 统一负责
+# 参数:
+#   $1 - 文件路径
+_rotate_file() {
+    local file="$1"
+    local date_suffix
+    date_suffix=$(date "+%Y-%m-%d_%H%M%S")
+    local target="${file}.${date_suffix}"
+
+    if [[ -f "$file" ]]; then
+        cp "$file" "$target"
+        : > "$file"  # truncate，写入方（pipe-pane/flock）无需中断
+    fi
+}
+
+# 生成带时间戳的 pipe-pane 命令
+# macOS/Linux 均自带 perl，用 perl 为每行添加时间戳前缀
+# 参数:
+#   $1 - 日志文件路径
+# 输出: 可传给 tmux pipe-pane -o 的命令字符串
+_pipe_pane_cmd() {
+    local log_file="$1"
+    local ts_fmt="$LOG_TIMESTAMP_FORMAT"
+    # 校验格式串：只允许 strftime 安全字符，防止注入 perl 代码
+    if [[ "$ts_fmt" =~ [^%A-Za-z0-9\ :/_-] ]]; then
+        log_warn "_pipe_pane_cmd: LOG_TIMESTAMP_FORMAT 含非法字符，回退到默认格式"
+        ts_fmt="%Y-%m-%d %H:%M:%S"
+    fi
+    # perl one-liner: 为每行添加 [timestamp] 前缀，flushed 输出
+    echo "perl -MPOSIX -ne '\$|=1; print \"[\".strftime(\"${ts_fmt}\",localtime).\"] \".\$_' >> '${log_file}'"
 }
 
 # =============================================================================

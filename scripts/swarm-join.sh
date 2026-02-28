@@ -218,6 +218,7 @@ log_info "启动 CLI: $CLI_CMD"
 # 从 state.json 读取项目目录和 worktree 目录
 PROJECT_DIR=$(jq -r '.project // ""' "$STATE_FILE" 2>/dev/null)
 [[ -n "$PROJECT_DIR" && -d "$PROJECT_DIR" ]] || die "state.json 中未找到有效的项目目录"
+load_project_config  # 加载项目级配置覆盖
 WORKTREE_DIR=$(jq -r '.worktree_dir // ""' "$STATE_FILE" 2>/dev/null)
 [[ -n "$WORKTREE_DIR" ]] || WORKTREE_DIR="$PROJECT_DIR/.swarm-worktrees"
 
@@ -266,7 +267,7 @@ send_init_to_pane "$PANE_TARGET" "$INIT_MSG"
 # =============================================================================
 
 LOG_FILE="$LOGS_DIR/${ROLE}.log"
-tmux pipe-pane -t "$SESSION_NAME:$PANE_TARGET" -o "cat >> '$LOG_FILE'"
+tmux pipe-pane -t "$SESSION_NAME:$PANE_TARGET" -o "$(_pipe_pane_cmd "$LOG_FILE")"
 
 WATCHER_PID=$(start_pane_watcher "$ROLE" "$LOG_FILE" "$PANE_TARGET" "$ROLE_WORKTREE")
 log_info "Watcher PID: $WATCHER_PID"

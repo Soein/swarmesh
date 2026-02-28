@@ -49,15 +49,7 @@ die() { echo "[ERROR] $*" >&2; exit 2; }
 
 log() { [[ "$JSON_OUTPUT" == "false" ]] && echo "[detect] $*" >&2 || true; }
 
-# 获取日志文件最后修改时间（epoch 秒）
-get_file_mtime() {
-    local file="$1"
-    if [[ -f "$file" ]]; then
-        stat -f %m "$file" 2>/dev/null || stat -c %Y "$file" 2>/dev/null || echo "0"
-    else
-        echo "0"
-    fi
-}
+# get_file_mtime 已统一到 swarm-lib.sh 的 _file_mtime()
 
 # ============================================================================
 # 核心检测逻辑
@@ -156,7 +148,7 @@ output_result() {
   "role": "$role",
   "elapsed_seconds": $elapsed,
   "pane": "$pane",
-  "timestamp": "$(date '+%Y-%m-%d %H:%M:%S')"
+  "timestamp": "$(get_timestamp)"
 }
 EOF
     else

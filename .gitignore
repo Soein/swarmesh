@@ -16,3 +16,6 @@ fifo-test/
 # 临时文件
 *.tmp
 .claude/
+
+# IDE / 工具缓存
+.serena/

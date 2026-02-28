@@ -13,15 +13,7 @@
 [[ -n "${_MSG_TASK_WATCHDOG_LOADED:-}" ]] && return 0
 _MSG_TASK_WATCHDOG_LOADED=1
 
-# =============================================================================
-# 配置
-# =============================================================================
-
-# 巡检间隔（秒）
-WATCHDOG_INTERVAL="${WATCHDOG_INTERVAL:-60}"
-
-# 任务最大处理时长（秒），0=禁用 TTL 检测（默认 6 小时）
-TASK_PROCESSING_TTL="${TASK_PROCESSING_TTL:-21600}"
+# WATCHDOG_INTERVAL / TASK_PROCESSING_TTL 由 config/defaults.conf 统一定义
 
 # =============================================================================
 # 内部函数
@@ -77,7 +69,7 @@ _watchdog_recover_task() {
         --arg from "watchdog" \
         --arg to "inspector" \
         --arg content "[任务恢复] 任务 $tid 已从 processing 恢复到 pending。原因: ${reason_text}。原认领者: ${original_claimer}。" \
-        --arg timestamp "$(date '+%Y-%m-%d %H:%M:%S')" \
+        --arg timestamp "$(get_timestamp)" \
         --arg status "pending" \
         --arg priority "high" \
         '{id:$id, from:$from, to:$to, content:$content, timestamp:$timestamp, status:$status, reply_to:null, priority:$priority}' \
@@ -103,7 +95,7 @@ _watchdog_idle_warning() {
         --arg from "watchdog" \
         --arg to "inspector" \
         --arg content "[空闲告警] 工蜂 $claimer 的 pane 处于空闲状态，但任务 $tid 仍未完成。请检查是否需要介入。" \
-        --arg timestamp "$(date '+%Y-%m-%d %H:%M:%S')" \
+        --arg timestamp "$(get_timestamp)" \
         --arg status "pending" \
         --arg priority "normal" \
         '{id:$id, from:$from, to:$to, content:$content, timestamp:$timestamp, status:$status, reply_to:null, priority:$priority}' \
@@ -168,25 +160,124 @@ _watchdog_check_one_task() {
 }
 
 # =============================================================================
+# 日志轮转检查（集成到看门狗巡检循环）
+# =============================================================================
+
+# _file_mtime / _file_size 定义在 swarm-lib.sh 中
+
+# 检查并轮转所有日志文件 + 统一归档清理
+_check_and_rotate_logs() {
+    local now
+    now=$(date +%s)
+
+    (  # subshell 隔离 nullglob，避免提前退出时影响调用者
+    shopt -s nullglob
+
+    # === 1. 角色日志: 按大小轮转（copy-truncate，无需中断 pipe-pane） ===
+    for log_file in "$LOGS_DIR"/*.log; do
+        [[ -f "$log_file" ]] || continue
+        local file_size
+        file_size=$(_file_size "$log_file")
+        if [[ "$file_size" -ge "$LOG_MAX_SIZE" ]]; then
+            _rotate_file "$log_file"
+            log_info "[watchdog] 日志轮转: $log_file (大小: $file_size)"
+        fi
+    done
+
+    # === 2. 事件日志: 按大小轮转 ===
+    if [[ -f "$EVENTS_LOG" ]]; then
+        local events_size
+        events_size=$(_file_size "$EVENTS_LOG")
+        if [[ "$events_size" -ge "$LOG_MAX_SIZE" ]]; then
+            (flock -x 200; _rotate_file "$EVENTS_LOG") 200>"${EVENTS_LOG}.lock"
+            log_info "[watchdog] 事件日志轮转: $EVENTS_LOG (大小: $events_size)"
+        fi
+    fi
+
+    # === 3. 质量门日志: 按 GATE_LOG_TTL 清理 ===
+    local gate_logs_dir="${GATE_LOGS_DIR:-$RUNTIME_DIR/gate-logs}"
+    if [[ -d "$gate_logs_dir" ]]; then
+        for gate_log in "$gate_logs_dir"/*.log; do
+            [[ -f "$gate_log" ]] || continue
+            if [[ $(( now - $(_file_mtime "$gate_log") )) -ge "$GATE_LOG_TTL" ]]; then
+                rm -f "$gate_log"
+                log_info "[watchdog] 清理过期质量门日志: $gate_log"
+            fi
+        done
+    fi
+
+    # === 4. 统一归档清理: 所有轮转副本按 LOG_RETENTION_TTL 清理 ===
+    # 覆盖: 角色日志轮转副本 + 事件日志轮转副本
+    local retention="$LOG_RETENTION_TTL"
+    local cleaned=0
+
+    # 角色日志轮转副本: runtime/logs/*.log.YYYY-MM-DD*
+    for f in "$LOGS_DIR"/*.log.*; do
+        [[ -f "$f" ]] || continue
+        [[ "$f" == *.lock ]] && continue
+        if [[ $(( now - $(_file_mtime "$f") )) -ge "$retention" ]]; then
+            rm -f "$f"
+            ((cleaned++)) || true
+        fi
+    done
+
+    # 事件日志轮转副本: runtime/events.jsonl.YYYY-MM-DD*
+    for f in "${EVENTS_LOG}."*; do
+        [[ -f "$f" ]] || continue
+        [[ "$f" == *.lock ]] && continue
+        if [[ $(( now - $(_file_mtime "$f") )) -ge "$retention" ]]; then
+            rm -f "$f"
+            ((cleaned++)) || true
+        fi
+    done
+
+    # swarm-stop 归档文件: runtime/logs/archive/*.tar.gz
+    local archive_dir="$LOGS_DIR/archive"
+    if [[ -d "$archive_dir" ]]; then
+        for f in "$archive_dir"/*.tar.gz; do
+            [[ -f "$f" ]] || continue
+            if [[ $(( now - $(_file_mtime "$f") )) -ge "$retention" ]]; then
+                rm -f "$f"
+                ((cleaned++)) || true
+            fi
+        done
+    fi
+
+    [[ $cleaned -gt 0 ]] && log_info "[watchdog] 归档清理: 删除 $cleaned 个超过 ${retention}s 的旧日志"
+
+    )  # subshell end
+}
+
+# =============================================================================
 # 主函数: 启动看门狗守护进程
 # =============================================================================
 
-# 启动后台守护进程，定期巡检 processing/ 中的任务
+# 启动后台守护进程，定期巡检 processing/ 中的任务 + 日志轮转
 # 输出: 守护进程 PID (stdout)
 start_task_watchdog() {
     (
         # 等待运行时目录就绪
         while [[ ! -d "$TASKS_DIR/processing" ]]; do sleep 1; done
 
+        local last_rotate_check=0
+
         while true; do
             sleep "$WATCHDOG_INTERVAL"
 
-            # 扫描 processing/ 目录
+            # 原有：任务健康检查
             shopt -s nullglob
             for f in "$TASKS_DIR/processing/"*.json; do
                 _watchdog_check_one_task "$f"
             done
             shopt -u nullglob
+
+            # 新增：日志轮转检查（按 LOG_ROTATE_INTERVAL 频率）
+            local now
+            now=$(date +%s)
+            if (( now - last_rotate_check >= LOG_ROTATE_INTERVAL )); then
+                _check_and_rotate_logs
+                last_rotate_check=$now
+            fi
         done
     ) &
     echo $!

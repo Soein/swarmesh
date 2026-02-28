@@ -55,7 +55,7 @@ _auto_claim_next() {
 
     # 原子认领: pending → processing（mv 只有一个进程能成功）
     local claimed_at
-    claimed_at=$(date '+%Y-%m-%d %H:%M:%S')
+    claimed_at=$(get_timestamp)
     mkdir -p "$TASKS_DIR/processing"
     if ! mv "$next_file" "$TASKS_DIR/processing/$next_id.json" 2>/dev/null; then
         # 被其他实例抢走了，静默返回
@@ -232,7 +232,7 @@ _check_group_completion() {
                 --arg from "system" \
                 --arg to "$from_role" \
                 --arg content "[任务组完成] $group_title (ID: $group_id)\n全部 $total 个任务已完成。执行 swarm-msg.sh group-status $group_id 查看详情。" \
-                --arg timestamp "$(date '+%Y-%m-%d %H:%M:%S')" \
+                --arg timestamp "$(get_timestamp)" \
                 --arg status "pending" \
                 --arg priority "high" \
                 '{id:$id, from:$from, to:$to, content:$content, timestamp:$timestamp, status:$status, reply_to:null, priority:$priority}' \
@@ -266,7 +266,7 @@ cmd_create_group() {
         --arg id "$group_id" \
         --arg title "$title" \
         --arg from "$my_role" \
-        --arg created_at "$(date '+%Y-%m-%d %H:%M:%S')" \
+        --arg created_at "$(get_timestamp)" \
         '{
             id: $id,
             title: $title,
@@ -365,7 +365,7 @@ cmd_publish() {
         --arg description "$description" \
         --arg branch "$branch" \
         --arg commit "$commit_hash" \
-        --arg created_at "$(date '+%Y-%m-%d %H:%M:%S')" \
+        --arg created_at "$(get_timestamp)" \
         --arg priority "$priority" \
         --arg group_id "$group_id" \
         --arg assigned_to "$assign_to" \
@@ -547,7 +547,7 @@ cmd_claim() {
 
     # 更新字段
     local claimed_at
-    claimed_at=$(date '+%Y-%m-%d %H:%M:%S')
+    claimed_at=$(get_timestamp)
     local tmp_file="$TASKS_DIR/processing/$task_id.json.tmp"
     jq --arg role "$my_role" --arg at "$claimed_at" \
         '.status = "processing" | .claimed_by = $role | .claimed_at = $at' \
@@ -612,7 +612,7 @@ cmd_complete_task() {
 
     # Gate 通过（或无需检查），正式完成: processing → completed
     local completed_at
-    completed_at=$(date '+%Y-%m-%d %H:%M:%S')
+    completed_at=$(get_timestamp)
 
     mkdir -p "$TASKS_DIR/completed"
     jq --arg result "$result" --arg at "$completed_at" \
@@ -635,7 +635,7 @@ cmd_complete_task() {
         --arg from "$my_role" \
         --arg to "$from_role" \
         --arg content "[任务完成] $task_title (ID: $task_id)\n结果: $result" \
-        --arg timestamp "$(date '+%Y-%m-%d %H:%M:%S')" \
+        --arg timestamp "$(get_timestamp)" \
         --arg status "pending" \
         --arg priority "high" \
         '{id:$id, from:$from, to:$to, content:$content, timestamp:$timestamp, status:$status, reply_to:null, priority:$priority}' \

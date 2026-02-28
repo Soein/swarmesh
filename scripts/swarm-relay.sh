@@ -230,7 +230,7 @@ ${response}"
   "type": "relay",
   "from": "$from_name",
   "to": "$to_name",
-  "timestamp": "$(date '+%Y-%m-%d %H:%M:%S')",
+  "timestamp": "$(get_timestamp)",
   "prompt": $(echo "$PROMPT_PREFIX" | jq -Rs .),
   "response_lines": $response_lines,
   "response": $(echo "$response" | jq -Rs .)
@@ -255,7 +255,7 @@ RESULT_EOF
   "from": "$from_name",
   "to": "$to_name",
   "response_lines": $response_lines,
-  "timestamp": "$(date '+%Y-%m-%d %H:%M:%S')"
+  "timestamp": "$(get_timestamp)"
 }
 EOF
     fi

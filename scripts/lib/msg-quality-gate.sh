@@ -17,10 +17,8 @@
 _MSG_QUALITY_GATE_LOADED=1
 
 GATE_LOGS_DIR="${GATE_LOGS_DIR:-$RUNTIME_DIR/gate-logs}"
-GATE_TIMEOUT="${GATE_TIMEOUT:-120}"
 
-# 不需要质量门检查的任务类型（可通过环境变量覆盖）
-SKIP_GATE_TYPES="${SKIP_GATE_TYPES:-review design architecture audit document plan}"
+# GATE_TIMEOUT / SKIP_GATE_TYPES 由 config/defaults.conf 统一定义
 
 # 解析验证命令（三层合并，无硬编码默认值）
 # 参数: $1=task_id, $2=role
@@ -113,7 +111,7 @@ _run_quality_gate() {
     local skip_count=0
     local skip_names=""
     local gate_start
-    gate_start=$(date '+%Y-%m-%d %H:%M:%S')
+    gate_start=$(get_timestamp)
 
     {
         echo "========================================"
@@ -130,24 +128,24 @@ _run_quality_gate() {
         [[ -z "$check_name" || -z "$check_cmd" ]] && continue
 
         {
-            echo "--- [$check_name] $check_cmd ---"
+            echo "[$(get_timestamp)] --- [$check_name] $check_cmd ---"
         } >> "$log_file"
 
         local exit_code=0
         # 在 worktree 目录下执行
         if timeout "$GATE_TIMEOUT" bash -c "cd '$worktree' && $check_cmd" >> "$log_file" 2>&1; then
-            echo "[PASS] $check_name" >> "$log_file"
+            echo "[$(get_timestamp)] [PASS] $check_name" >> "$log_file"
             info "[质量门] $check_name: 通过"
         else
             exit_code=$?
             # 区分 "命令不存在"(127) 和 "检查失败"
             if [[ $exit_code -eq 127 ]]; then
-                echo "[SKIP] $check_name (命令不存在, exit=$exit_code)" >> "$log_file"
+                echo "[$(get_timestamp)] [SKIP] $check_name (命令不存在, exit=$exit_code)" >> "$log_file"
                 warn "[质量门] $check_name: 命令不存在，跳过（环境可能缺少依赖）"
                 skip_count=$((skip_count + 1))
                 skip_names+="$check_name "
             else
-                echo "[FAIL] $check_name (exit=$exit_code)" >> "$log_file"
+                echo "[$(get_timestamp)] [FAIL] $check_name (exit=$exit_code)" >> "$log_file"
                 info "[质量门] $check_name: 失败 (exit=$exit_code)"
                 all_passed=false
             fi
@@ -158,7 +156,7 @@ _run_quality_gate() {
     {
         echo "========================================"
         echo "结果: $([ "$all_passed" = true ] && echo "全部通过" || echo "有检查失败")"
-        echo "结束时间: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "结束时间: $(get_timestamp)"
         echo "========================================"
     } >> "$log_file"
 
