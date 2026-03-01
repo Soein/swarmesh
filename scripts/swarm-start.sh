@@ -327,7 +327,7 @@ for ((i=0; i<ROLES_COUNT; i++)); do
         # 使用共享函数构建初始化消息（与 swarm-join.sh 统一）
         INIT_MSG=$(build_init_message "$CONFIG_FILE" "$ROLE_BRANCH" "$TEAM_INFO")
 
-        INIT_TMP=$(mktemp "${RUNTIME_DIR}/.init-XXXXXX.txt")
+        INIT_TMP=$(mktemp "${RUNTIME_DIR}/.init-XXXXXX")
         printf '%s' "$INIT_MSG" > "$INIT_TMP"
         tmux load-buffer "$INIT_TMP"
         tmux paste-buffer -t "$SESSION_NAME:$PANE_TARGET"

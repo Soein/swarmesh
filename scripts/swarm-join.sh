@@ -338,7 +338,7 @@ if [[ -n "$INITIAL_TASK" ]]; then
     log_info "派发初始任务..."
     sleep 2  # 等待 CLI 处理完初始化消息
 
-    TASK_TMP=$(mktemp "${RUNTIME_DIR}/.task-XXXXXX.txt")
+    TASK_TMP=$(mktemp "${RUNTIME_DIR}/.task-XXXXXX")
     printf '%s' "$INITIAL_TASK" > "$TASK_TMP"
     tmux load-buffer "$TASK_TMP"
     tmux paste-buffer -t "$SESSION_NAME:$PANE_TARGET"

@@ -109,7 +109,7 @@ push_to_pane() {
 
     local buf_name="msg-$$-$RANDOM"
     local tmp_file
-    tmp_file=$(mktemp "${RUNTIME_DIR}/.msg-push-XXXXXX.txt")
+    tmp_file=$(mktemp "${RUNTIME_DIR}/.msg-push-XXXXXX")
     trap "rm -f '$tmp_file'" RETURN
     printf '%s' "$notification" > "$tmp_file"
 

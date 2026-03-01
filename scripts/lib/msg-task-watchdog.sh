@@ -279,6 +279,6 @@ start_task_watchdog() {
                 last_rotate_check=$now
             fi
         done
-    ) &
+    ) >/dev/null &
     echo $!
 }

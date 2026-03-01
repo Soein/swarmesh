@@ -191,7 +191,7 @@ log_info "发送任务到 pane: $SESSION_NAME:$TARGET_PANE"
 # 使用 tmux load-buffer + paste-buffer 发送任务
 # 原因: send-keys 逐字符发送时，某些 CLI TUI（如 Claude Code）
 #        无法正确处理后续的 Enter 键提交。paste-buffer 一次性粘贴可避免此问题。
-SEND_TMP=$(mktemp "${RUNTIME_DIR}/.send-XXXXXX.txt")
+SEND_TMP=$(mktemp "${RUNTIME_DIR}/.send-XXXXXX")
 printf '%s' "$TASK_CONTENT" > "$SEND_TMP"
 tmux load-buffer "$SEND_TMP"
 tmux paste-buffer -t "$SESSION_NAME:$TARGET_PANE"

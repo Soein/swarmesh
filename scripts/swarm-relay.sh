@@ -205,7 +205,7 @@ ${response}"
 
     # 将消息写入临时文件，避免 send-keys 长度限制
     local tmp_file
-    tmp_file=$(mktemp "${SWARM_ROOT}/runtime/.relay-XXXXXX.txt")
+    tmp_file=$(mktemp "${SWARM_ROOT}/runtime/.relay-XXXXXX")
     echo "$message" > "$tmp_file"
 
     # 使用 tmux load-buffer + paste-buffer 发送长消息

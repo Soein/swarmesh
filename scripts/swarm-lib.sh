@@ -250,7 +250,7 @@ send_init_to_pane() {
     local init_msg="$2"
 
     local init_tmp
-    init_tmp=$(mktemp "${RUNTIME_DIR}/.init-XXXXXX.txt")
+    init_tmp=$(mktemp "${RUNTIME_DIR}/.init-XXXXXX")
     printf '%s' "$init_msg" > "$init_tmp"
     tmux load-buffer "$init_tmp"
     tmux paste-buffer -t "${SESSION_NAME}:${pane_target}"
@@ -298,7 +298,7 @@ notify_all_roles() {
 
         # 通道 2: paste-buffer 尽力即时推送
         local notify_tmp
-        notify_tmp=$(mktemp "${RUNTIME_DIR}/.notify-XXXXXX.txt")
+        notify_tmp=$(mktemp "${RUNTIME_DIR}/.notify-XXXXXX")
         printf '%s' "$pane_content" > "$notify_tmp"
         tmux load-buffer "$notify_tmp"
         tmux paste-buffer -t "${SESSION_NAME}:${role_pane}" 2>/dev/null || true
@@ -320,7 +320,7 @@ state_json_update() {
     local state_file="${STATE_FILE:-$RUNTIME_DIR/state.json}"
     local lock_file="${state_file}.lock"
     local tmp_file
-    tmp_file=$(mktemp "${RUNTIME_DIR}/.state-update-XXXXXX.json")
+    tmp_file=$(mktemp "${RUNTIME_DIR}/.state-update-XXXXXX")
 
     (
         flock -x 200
@@ -353,6 +353,28 @@ if ! command -v timeout &>/dev/null; then
         # timer 已结束（kill 返回非 0），说明是超时触发的 kill
         wait "$timer_pid" 2>/dev/null
         return 124
+    }
+fi
+
+# =============================================================================
+# macOS 兼容: flock polyfill
+# =============================================================================
+
+if ! command -v flock &>/dev/null; then
+    # macOS 不自带 flock（属于 util-linux）。
+    # 完整的 fd 级 flock 在纯 shell 中无法可靠模拟（需要对已打开的 fd 加锁），
+    # 蜂群场景中并发写入频率低（每个角色间隔数秒以上），降级为 no-op 是最安全的做法。
+    # 如需强锁，可安装: brew install util-linux
+    flock() {
+        local mode="" fd=""
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                -x|-s|-u) mode="$1"; shift ;;
+                *)        fd="$1"; shift ;;
+            esac
+        done
+        # 降级为无操作
+        :
     }
 fi
 
@@ -579,13 +601,18 @@ _inject_to_file() {
         printf '%s\n' "$content" > "$file"
     elif grep -q "$SWARM_CONTEXT_START" "$file" 2>/dev/null; then
         # 已有标记，替换标记之间的内容
-        local tmp
-        tmp=$(mktemp "${RUNTIME_DIR}/.ctx-XXXXXX.md")
-        awk -v start="$SWARM_CONTEXT_START" -v end="$SWARM_CONTEXT_END" -v new="$content" '
-            $0 == start { skip=1; print new; next }
+        # 注: macOS awk 不支持 -v 传入多行字符串（报 newline in string），
+        # 改为先写入临时文件，awk 用 getline 从文件读取并插入
+        local tmp content_tmp
+        tmp=$(mktemp "${RUNTIME_DIR}/.ctx-XXXXXX")
+        content_tmp=$(mktemp "${RUNTIME_DIR}/.ctx-inject-XXXXXX")
+        printf '%s\n' "$content" > "$content_tmp"
+        awk -v start="$SWARM_CONTEXT_START" -v end="$SWARM_CONTEXT_END" -v cfile="$content_tmp" '
+            $0 == start { skip=1; while((getline line < cfile) > 0) print line; close(cfile); next }
             $0 == end   { skip=0; next }
             !skip       { print }
         ' "$file" > "$tmp"
+        rm -f "$content_tmp"
         mv "$tmp" "$file"
     else
         # 文件存在但无标记，追加到末尾
@@ -607,7 +634,7 @@ cleanup_swarm_context() {
             [[ -f "$file" ]] || continue
             if grep -q "$SWARM_CONTEXT_START" "$file" 2>/dev/null; then
                 local tmp
-                tmp=$(mktemp "${RUNTIME_DIR:-.}/.ctx-clean-XXXXXX.md")
+                tmp=$(mktemp "${RUNTIME_DIR:-.}/.ctx-clean-XXXXXX")
                 awk -v start="$SWARM_CONTEXT_START" -v end="$SWARM_CONTEXT_END" '
                     $0 == start { skip=1; next }
                     $0 == end   { skip=0; next }
@@ -756,6 +783,6 @@ start_pane_watcher() {
                 esac
             fi
         done
-    ) &
+    ) >/dev/null &
     echo $!
 }
