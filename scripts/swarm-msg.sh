@@ -611,6 +611,11 @@ swarm-msg.sh - CLI-to-CLI 自主消息 & 任务队列工具
   list-tasks [选项]                    列出队列中的任务
   claim <task-id>                      认领一个待处理任务
   complete-task <task-id> "<result>"   完成任务并反馈结果
+  fail-task <task-id> ["<reason>"]     报告任务失败（自动重试或移入 failed/）
+  escalate-task <task-id> ["<reason>"]  上报任务给 supervisor 拆分（释放认领，继续干其他活）
+  split-task <parent-id> [选项]        拆分任务为子任务（支持多层嵌套，深度上限: SUBTASK_MAX_DEPTH）
+  re-split <parent-id>                 重置拆分（保留已完成子任务，取消未完成的）
+  expand-subtask <subtask-id> [选项]  展开子任务为更细粒度的子任务（打平到同层）
   group-status [group-id]              查看任务组进度
   story-view <group-id>                查看任务组 Story（渲染为 markdown）
   set-verify '<json>' --role <name>    设置角色级验证命令（质量门按角色执行）
@@ -626,6 +631,18 @@ publish 选项:
   --depends <id1,id2,...>      依赖的任务 ID（逗号分隔，阻塞直到依赖完成）
   --branch|-b <branch>         指定关联分支（覆盖自动检测，支持逗号分隔多分支）
   --verify|-V <json>           任务级验证命令（JSON 对象，如 '{"test":"go test ./..."}'）
+
+split-task 选项（可重复使用 --subtask 定义多个子任务）:
+  --subtask|-s "<title>"         子任务标题（每个 --subtask 开启一组新参数）
+  --assign|-a <role>             指派给特定角色（跟在 --subtask 后面）
+  --depends <a,b,...>            依赖的子任务后缀（如 a,b 自动展开为 parent-a,parent-b）
+  --description|-d "<text>"      子任务描述
+
+expand-subtask 选项（参数格式同 split-task）:
+  --subtask|-s "<title>"         新子任务标题（可多次指定）
+  --assign|-a <role>             指派角色
+  --depends <a,b,...>            依赖简写（同 split-task）
+  --description|-d "<text>"      任务描述
 
 list-tasks 选项:
   --type|-t <type>             按类型过滤 (如 review, develop)
@@ -650,7 +667,7 @@ wait 选项:
   swarm-msg.sh broadcast "API 接口已就绪"
 
   # 任务队列（独立任务）
-  swarm-msg.sh publish review "审核用户注册 API" -d "实现了注册、登录、JWT 鉴权"
+  swarm-msg.sh publish review "审核用户注册 API" --assign reviewer -d "实现了注册、登录、JWT 鉴权"
   swarm-msg.sh claim task-xxx
   swarm-msg.sh complete-task task-xxx "审核通过"
 
@@ -672,11 +689,36 @@ wait 选项:
   swarm-msg.sh group-status $G
   swarm-msg.sh list-tasks --group $G --all
 
+  # 子任务拆分（Worker 在执行中发现任务太大，主动拆分）
+  swarm-msg.sh split-task task-xxx \
+    --subtask "数据校验" --assign backend \
+    --subtask "JWT鉴权" --assign backend --depends a \
+    --subtask "集成测试" --assign backend --depends a,b
+  # 子任务完成后自动 compose 归一到父任务
+
+  # 重新拆分（取消未完成的子任务，保留已完成的）
+  swarm-msg.sh re-split task-xxx
+
+  # Worker 自助展开子任务（将正在执行的子任务拆为更细粒度，打平到同层）
+  # 假设父任务已有子任务 a, b, c（其中 c depends b）
+  swarm-msg.sh claim task-xxx-b
+  swarm-msg.sh expand-subtask task-xxx-b \
+    --subtask "密码加密" --assign backend \
+    --subtask "JWT签发" --assign backend --depends d
+  # task-xxx-b → failed(expanded)
+  # 新建 task-xxx-d(密码加密), task-xxx-e(JWT签发, depends d)
+  # task-xxx-c 的依赖自动从 [b] 重写为 [d, e]
+
+  # 工蜂发现子任务太复杂，上报给 supervisor 拆分
+  swarm-msg.sh escalate-task task-xxx-b "需求涉及 3 个独立模块，建议拆分"
+  # 工蜂自动认领下一个任务继续工作
+  # supervisor 收到通知后用 expand-subtask 展开
+
   # 质量门验证命令（由 inspector 按角色配置）
   swarm-msg.sh set-verify '{"build":"cd backend && go build ./..."}' --role backend
   swarm-msg.sh set-verify '{"build":"npm run build","test":"npm test"}' --role frontend
   # 或发任务时逐个指定
-  swarm-msg.sh publish develop "实现 API" --verify '{"build":"go build ./...","test":"go test ./..."}'
+  swarm-msg.sh publish develop "实现 API" --assign backend --verify '{"build":"go build ./...","test":"go test ./..."}'
   # 查看任务组 Story
   swarm-msg.sh story-view $G
 
@@ -743,6 +785,26 @@ main() {
         complete-task)
             [[ $# -ge 2 ]] || die "用法: swarm-msg.sh complete-task <task-id> \"<result>\""
             cmd_complete_task "$1" "$2"
+            ;;
+        fail-task)
+            [[ $# -ge 1 ]] || die "用法: swarm-msg.sh fail-task <task-id> [\"<reason>\"]"
+            cmd_fail_task "$1" "${2:-未指定原因}"
+            ;;
+        escalate-task)
+            [[ $# -ge 1 ]] || die "用法: swarm-msg.sh escalate-task <task-id> [\"<reason>\"]"
+            cmd_escalate_task "$1" "${2:-任务过于复杂，需要拆分}"
+            ;;
+        split-task)
+            [[ $# -ge 1 ]] || die "用法: swarm-msg.sh split-task <parent-task-id> --subtask \"标题\" --assign 角色 [...]"
+            cmd_split_task "$@"
+            ;;
+        re-split)
+            [[ $# -ge 1 ]] || die "用法: swarm-msg.sh re-split <parent-task-id>"
+            cmd_re_split "$1"
+            ;;
+        expand-subtask)
+            [[ $# -ge 1 ]] || die "用法: swarm-msg.sh expand-subtask <subtask-id> --subtask \"标题\" --assign 角色 [...]"
+            cmd_expand_subtask "$@"
             ;;
         group-status)
             cmd_group_status "${1:-}"

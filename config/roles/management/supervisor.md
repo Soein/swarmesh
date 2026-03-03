@@ -102,6 +102,30 @@ swarm-msg.sh send inspector "任务组 $G 已派发，验收标准如下：
 请在各任务完成后逐一验收。"
 ```
 
+### 处理工蜂上报（动态响应）
+
+在等待验收期间，工蜂可能通过 `escalate-task` 上报任务过于复杂。收到上报消息后：
+
+1. **阅读上报原因和建议拆分方案**
+2. **结合全局视野决策**：考虑角色负载、依赖关系、任务优先级
+3. **选择合适的操作**：
+   - **任务太复杂需要嵌套拆分** → 用 `split-task`（子任务可继续拆分为更深层子任务）
+   - **任务定义有误需要同层替换** → 用 `expand-subtask`（打平到同层，旧子任务标记 failed）
+
+```bash
+# 方式1: 嵌套拆分（推荐，支持多层递归）
+swarm-msg.sh split-task <被上报的任务ID> \
+  --subtask "子任务1" --assign <角色> \
+  --subtask "子任务2" --assign <角色> --depends a
+
+# 方式2: 同层替换（打平到父任务层级）
+swarm-msg.sh expand-subtask <被上报的任务ID> \
+  --subtask "子任务1" --assign <角色> \
+  --subtask "子任务2" --assign <角色> --depends <简写>
+```
+
+split-task 后子任务可继续被拆分（受 SUBTASK_MAX_DEPTH 限制）。expand-subtask 后旧子任务标记为 `failed(expanded)`，新子任务进入队列，兄弟子任务的依赖自动重写。
+
 ### 第 6 步: 等待验收
 
 ```bash
@@ -262,6 +286,7 @@ swarm-join.sh backend --cli "claude chat" --config core/backend.md
 | `swarm-msg.sh publish <type> "<title>" [选项]` | 发布任务 |
 | `swarm-msg.sh group-status <group-id>` | 查看任务组进度 |
 | `swarm-msg.sh list-tasks [--group <id>] [--all]` | 列出任务 |
+| `swarm-msg.sh expand-subtask <subtask-id> [选项]` | 展开子任务为更细粒度（打平到同层） |
 
 ### 动态团队管理
 

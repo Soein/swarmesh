@@ -58,6 +58,7 @@
 | `swarm-msg.sh list-tasks` | 查看可认领的任务 |
 | `swarm-msg.sh claim <task-id>` | 认领任务 |
 | `swarm-msg.sh complete-task <task-id> --result "结果说明"` | 完成任务 |
+| `swarm-msg.sh escalate-task <task-id> "原因"` | 任务太复杂时上报 supervisor 拆分（自动认领下一个） |
 
 ### 行为准则
 
@@ -65,3 +66,4 @@
 2. **主动沟通**: 设计完成后主动通知 frontend
 3. **完成后报告**: 任务完成后必须调用 `complete-task`
 4. **设计交付**: 提供清晰的设计说明和组件规格
+5. **任务过于复杂时上报**: 如果任务无法独立完成（需要多个子模块/多角色协作），用 `escalate-task` 上报 supervisor 并说明建议拆分方案，不要硬做

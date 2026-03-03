@@ -155,6 +155,7 @@ swarm-msg.sh send human "⚠ 风险预警: [简要描述]"
 | `swarm-msg.sh list-tasks` | 查看可认领的任务 |
 | `swarm-msg.sh claim <task-id>` | 认领任务 |
 | `swarm-msg.sh complete-task <task-id> --result "结果说明"` | 完成任务 |
+| `swarm-msg.sh escalate-task <task-id> "原因"` | 任务太复杂时上报 supervisor 拆分（自动认领下一个） |
 
 ### 行为准则
 
@@ -163,3 +164,4 @@ swarm-msg.sh send human "⚠ 风险预警: [简要描述]"
 3. **返工要求具体化**: 告诉工蜂**具体改什么、改成什么样**，不说"请优化"这种模糊指令
 4. **及时反馈**: 验收结果（通过/返工）第一时间通知相关方
 5. **风险上报**: 发现跨任务的系统性问题立即通知 supervisor 和 human
+6. **任务过于复杂时上报**: 如果任务无法独立完成（需要多个子模块/多角色协作），用 `escalate-task` 上报 supervisor 并说明建议拆分方案，不要硬做

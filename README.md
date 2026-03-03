@@ -1,8 +1,265 @@
 # Swarmesh
 
+[English](#english) | [中文](#中文)
+
+---
+
+<a id="english"></a>
+
+## English
+
+A tmux-based multi-AI CLI swarm collaboration framework. Orchestrate multiple AI CLI instances (Claude Code, Gemini CLI, Codex, etc.) within a single tmux session, enabling autonomous collaboration through a messaging system to tackle complex tasks.
+
+### Core Concept
+
+```
+You (human)               swarm-start.sh
+   │                         │
+   │  --profile minimal      │
+   └────────────────────────►│
+                             │
+                    ┌────────┼────────┐
+                    ▼        ▼        ▼
+               ┌────────┐┌────────┐┌────────┐
+               │frontend││backend ││reviewer│  ← tmux pane
+               │Gemini  ││Claude  ││Codex   │  ← different AI CLIs
+               └───┬────┘└───┬────┘└───┬────┘
+                   │         │         │
+                   └────►inbox/outbox◄─┘  ← file-based messaging
+                         + paste-buffer   ← instant notification
+```
+
+Each role runs in an isolated tmux pane with its own role configuration, inbox, and optional git worktree. Roles communicate autonomously via `swarm-msg.sh` — no human relay needed.
+
+### Quick Start
+
+#### Dependencies
+
+- tmux
+- jq
+- At least one AI CLI ([Claude Code](https://github.com/anthropics/claude-code), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [Codex](https://github.com/openai/codex), etc.)
+
+#### Universal CLI (Recommended)
+
+`swarm-cli.sh` is the universal control entry point, usable from any terminal:
+
+```bash
+# Start swarm (interactive profile selection)
+./scripts/swarm-cli.sh start ~/my-app
+
+# Start swarm (specify profile)
+./scripts/swarm-cli.sh start ~/my-app web-dev
+
+# Check swarm status (roles, inboxes, tasks, events)
+./scripts/swarm-cli.sh status
+
+# Dispatch task to supervisor (auto-orchestration)
+./scripts/swarm-cli.sh task "Implement user registration"
+
+# Dispatch task to a specific role
+./scripts/swarm-cli.sh task backend "Implement login API"
+
+# View inbox and task queue
+./scripts/swarm-cli.sh task
+
+# Dynamically add/remove roles (interactive selection)
+./scripts/swarm-cli.sh join
+./scripts/swarm-cli.sh leave
+
+# Pass-through messaging commands
+./scripts/swarm-cli.sh msg send reviewer "Please review PR #42"
+./scripts/swarm-cli.sh msg broadcast "v1 API finalized"
+
+# Stop swarm (optional data cleanup)
+./scripts/swarm-cli.sh stop
+./scripts/swarm-cli.sh stop --clean
+```
+
+Each subcommand supports `--help` for detailed usage: `./scripts/swarm-cli.sh start --help`
+
+#### Claude Code Users
+
+If you use Claude Code as your controller, you can use slash commands directly (same underlying logic):
+
+- `/swarm-start` — Start swarm
+- `/swarm-stop` — Stop swarm
+- `/swarm-status` — View status
+- `/swarm-task` — Dispatch task
+- `/swarm-join` — Add role
+- `/swarm-leave` — Remove role
+
+#### Low-level Scripts
+
+You can also call the underlying scripts directly:
+
+```bash
+# Start
+./scripts/swarm-start.sh --project /path/to/your/project --profile minimal --hidden
+
+# Status
+./scripts/swarm-status.sh
+
+# Stop
+./scripts/swarm-stop.sh --force
+```
+
+### Messaging System
+
+Roles communicate via `swarm-msg.sh`, called directly within each role's pane:
+
+```bash
+# Send message
+swarm-msg.sh send backend "Please design the auth API"
+
+# Broadcast to all roles
+swarm-msg.sh broadcast "v1 API spec finalized, please review"
+
+# Check inbox
+swarm-msg.sh inbox
+
+# Reply to message
+swarm-msg.sh reply <msg-id> "Got it, starting now"
+
+# List team members
+swarm-msg.sh list-roles
+
+# Create/claim tasks
+swarm-msg.sh task create "Implement login page" --assign frontend
+swarm-msg.sh task take <task-id>
+```
+
+Messages are persisted via the file system (inbox/outbox) and instantly pushed to target panes using tmux paste-buffer.
+
+### Dynamic Scaling
+
+```bash
+# Add new role at runtime
+./scripts/swarm-join.sh --role security --cli "claude chat" --config quality/security.md
+
+# Remove role
+./scripts/swarm-leave.sh database --reason "Database design complete"
+```
+
+### Quality Assurance
+
+#### Project Scanning
+
+On startup, the target project structure is automatically scanned, collecting key config files (`package.json`, `go.mod`, `Cargo.toml`, etc.) into `runtime/project-info.json`. Scripts only collect raw facts; LLM roles interpret the tech stack themselves.
+
+#### Story Files
+
+Each task group auto-generates a Story file (`runtime/stories/<group-id>.json`) recording sub-task status, acceptance records, and progress timeline. Data is stored in JSON and rendered as markdown for display:
+
+```bash
+swarm-msg.sh story-view <group-id>
+```
+
+#### Quality Gates
+
+When a worker calls `complete-task`, verification commands (build/test/lint) run automatically. If checks fail, the task stays in processing state — the worker must fix issues and resubmit.
+
+Verification command priority (low → high):
+
+1. **Runtime**: `runtime/project-info.json` `verify_commands` (configured by inspector via `set-verify`)
+2. **Project-level**: `.swarm/verify.json` (user-created)
+3. **Task-level**: `publish --verify '{"test":"go test ./..."}'` (specified at publish time)
+
+```bash
+# Inspector configures verification by role
+swarm-msg.sh set-verify '{"build":"go build ./...","test":"go test ./..."}' --role backend
+swarm-msg.sh set-verify '{"build":"npm run build","test":"npm test"}' --role frontend
+
+# Or specify at task publish time
+swarm-msg.sh publish develop "Implement API" --assign backend --verify '{"build":"go build ./..."}'
+```
+
+### Project Structure
+
+```
+swarmesh/
+├── scripts/                 # Core scripts
+│   ├── swarm-cli.sh         # Universal control entry (all subcommands)
+│   ├── swarm-start.sh       # Start swarm
+│   ├── swarm-stop.sh        # Stop swarm
+│   ├── swarm-msg.sh         # Inter-CLI messaging
+│   ├── swarm-scan.sh        # Project structure scanner
+│   ├── swarm-join.sh        # Dynamically add role
+│   ├── swarm-leave.sh       # Dynamically remove role
+│   ├── swarm-status.sh      # Status viewer
+│   ├── swarm-relay.sh       # Message relay (human → role)
+│   ├── swarm-send.sh        # External message sender
+│   ├── swarm-read.sh        # External message reader
+│   ├── swarm-detect.sh      # CLI status detection
+│   ├── swarm-events.sh      # Event system
+│   ├── swarm-workflow.sh    # Workflow engine
+│   ├── swarm-lib.sh         # Shared function library
+│   └── lib/                 # swarm-msg submodules
+│       ├── msg-story.sh     # Story files
+│       ├── msg-quality-gate.sh  # Quality gates
+│       ├── msg-task-queue.sh    # Task queue
+│       └── msg-task-watchdog.sh # Task watchdog
+├── config/
+│   ├── defaults.conf        # Framework defaults (logging/gates/watchdog/tmux)
+│   ├── profiles/            # Team profile presets
+│   │   ├── minimal.json     # 3-role minimal team
+│   │   ├── web-dev.json     # 7-role web dev team
+│   │   └── full-stack.json  # 13-role full team
+│   ├── roles/               # Role system prompts
+│   │   ├── core/            # Core dev (frontend, backend, database, devops)
+│   │   ├── quality/         # QA (tester, reviewer, security, performance)
+│   │   └── management/      # Management (supervisor, architect, auditor, inspector, ui-designer)
+│   └── cli-routing.json     # CLI routing config
+├── workflows/               # Predefined workflows
+│   ├── quick-task.json
+│   ├── feature-complete.json
+│   └── relay-chain.json
+└── runtime/                 # Runtime data (gitignored)
+    ├── state.json           # Swarm state
+    ├── project-info.json    # Project scan results
+    ├── logs/                # Role logs
+    ├── messages/            # inbox/outbox
+    ├── tasks/               # Task state machine
+    ├── pipes/               # FIFO pipes (instant notification)
+    ├── stories/             # Task group Story files
+    ├── workflows/           # Workflow runtime state
+    ├── gate-logs/           # Quality gate check logs
+    └── results/             # Task results
+```
+
+### Profile Presets
+
+| Profile | Roles | Use Case |
+|---------|-------|----------|
+| `minimal` | 3 | Quick validation, small features |
+| `web-dev` | 7 | Web application development |
+| `full-stack` | 13 | Large projects, enterprise-level |
+
+Supports mixing different AI CLIs — frontend uses Gemini, backend uses Claude, reviewer uses Codex within the same swarm, each leveraging their strengths.
+
+### Design Principles
+
+- **Pure Bash + filesystem**: No extra dependencies, runs on any machine with tmux
+- **CLI-agnostic**: Not tied to any specific AI CLI, switch via profile config
+- **Role autonomy**: Roles collaborate autonomously via messaging, no human relay needed
+- **Git worktree isolation**: Each role can work on an independent branch, avoiding conflicts
+- **Configurable, not hardcoded**: All parameters centralized in `config/defaults.conf`, supporting 3-tier priority override (env vars > project-level `.swarm/swarm.conf` > defaults)
+
+### License
+
+[Business Source License 1.1 (BSL 1.1)](https://mariadb.com/bsl11/)
+
+- Change Date: 2030-02-27
+- Change License: GPL-2.0-or-later
+
+---
+
+<a id="中文"></a>
+
+## 中文
+
 基于 tmux 的多 AI CLI 蜂群协作框架。在一个 tmux session 中编排多个 AI CLI 实例（Claude Code、Gemini CLI、Codex 等），让它们通过消息系统自主协作完成复杂任务。
 
-## 核心思路
+### 核心思路
 
 ```
 你（人类）                swarm-start.sh
@@ -23,15 +280,15 @@
 
 每个角色运行在独立 tmux pane 中，拥有自己的角色配置、收件箱和可选的 git worktree。角色之间通过 `swarm-msg.sh` 自主通讯，无需人类中转。
 
-## 快速开始
+### 快速开始
 
-### 依赖
+#### 依赖
 
 - tmux
 - jq
 - 至少一个 AI CLI（[Claude Code](https://github.com/anthropics/claude-code)、[Gemini CLI](https://github.com/google-gemini/gemini-cli)、[Codex](https://github.com/openai/codex) 等）
 
-### 通用 CLI（推荐）
+#### 通用 CLI（推荐）
 
 `swarm-cli.sh` 是通用主控入口，任何终端都能使用：
 
@@ -69,7 +326,7 @@
 
 每个子命令支持 `--help` 查看详细用法：`./scripts/swarm-cli.sh start --help`
 
-### Claude Code 用户
+#### Claude Code 用户
 
 如果你使用 Claude Code 作为主控，可以直接用 slash command（底层逻辑相同）：
 
@@ -80,7 +337,7 @@
 - `/swarm-join` — 加入角色
 - `/swarm-leave` — 移除角色
 
-### 底层脚本
+#### 底层脚本
 
 也可以直接调用底层脚本：
 
@@ -95,7 +352,7 @@
 ./scripts/swarm-stop.sh --force
 ```
 
-## 消息系统
+### 消息系统
 
 角色之间通过 `swarm-msg.sh` 通讯，每个角色在自己的 pane 内直接调用：
 
@@ -122,7 +379,7 @@ swarm-msg.sh task take <task-id>
 
 消息通过文件系统（inbox/outbox）持久化，同时用 tmux paste-buffer 即时推送通知到目标 pane。
 
-## 动态扩缩容
+### 动态扩缩容
 
 ```bash
 # 运行中加入新角色
@@ -132,13 +389,13 @@ swarm-msg.sh task take <task-id>
 ./scripts/swarm-leave.sh database --reason "数据库设计已完成"
 ```
 
-## 质量保障
+### 质量保障
 
-### 项目扫描
+#### 项目扫描
 
 启动时自动扫描目标项目结构，收集关键配置文件（`package.json`、`go.mod`、`Cargo.toml` 等）信息到 `runtime/project-info.json`。脚本只收集原始事实，LLM 角色自行解读技术栈。
 
-### Story 文件
+#### Story 文件
 
 每个任务组自动生成 Story 文件（`runtime/stories/<group-id>.json`），记录子任务状态、验收记录和进度时间线。数据用 JSON 存储，展示时渲染为 markdown：
 
@@ -146,7 +403,7 @@ swarm-msg.sh task take <task-id>
 swarm-msg.sh story-view <group-id>
 ```
 
-### 质量门
+#### 质量门
 
 工蜂 `complete-task` 时自动执行验证命令（build/test/lint），检查失败则任务保持 processing，工蜂需修复后重新提交。
 
@@ -161,10 +418,10 @@ swarm-msg.sh set-verify '{"build":"go build ./...","test":"go test ./..."}' --ro
 swarm-msg.sh set-verify '{"build":"npm run build","test":"npm test"}' --role frontend
 
 # 或发布任务时指定
-swarm-msg.sh publish develop "实现 API" --verify '{"build":"go build ./..."}'
+swarm-msg.sh publish develop "实现 API" --assign backend --verify '{"build":"go build ./..."}'
 ```
 
-## 项目结构
+### 项目结构
 
 ```
 swarmesh/
@@ -217,7 +474,7 @@ swarmesh/
     └── results/             # 任务结果
 ```
 
-## Profile 预设
+### Profile 预设
 
 | Profile | 角色数 | 适用场景 |
 |---------|--------|---------|
@@ -227,7 +484,7 @@ swarmesh/
 
 支持混合不同 AI CLI —— 同一蜂群中 frontend 用 Gemini、backend 用 Claude、reviewer 用 Codex，各取所长。
 
-## 设计原则
+### 设计原则
 
 - **纯 Bash + 文件系统**：无额外依赖，任何有 tmux 的机器都能跑
 - **CLI 无关**：不绑定特定 AI CLI，通过 profile 配置切换
@@ -235,7 +492,7 @@ swarmesh/
 - **Git worktree 隔离**：每个角色可在独立分支上工作，避免冲突
 - **可配置不硬编码**：所有参数集中定义在 `config/defaults.conf`，支持三层优先级覆盖（环境变量 > 项目级 `.swarm/swarm.conf` > 默认值）
 
-## License
+### License
 
 [Business Source License 1.1 (BSL 1.1)](https://mariadb.com/bsl11/)
 

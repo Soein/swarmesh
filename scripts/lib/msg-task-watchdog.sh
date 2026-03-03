@@ -36,46 +36,128 @@ _watchdog_recover_task() {
 
     [[ -f "$task_file" ]] || return 0
 
-    # 先在 processing/ 生成更新后的 tmp（jq 失败则不动原文件）
-    mkdir -p "$TASKS_DIR/pending"
-    local tmp="$TASKS_DIR/processing/${tid}.json.tmp"
-    if ! jq '.status = "pending" | .claimed_by = null | .claimed_at = null' \
-        "$task_file" > "$tmp" 2>/dev/null; then
-        rm -f "$tmp"
-        return 1  # jq 失败，保留原文件不动
-    fi
+    # 读取重试信息（兼容旧 JSON: // 0 / // 3）
+    local retry_count max_retries
+    retry_count=$(jq -r '.retry_count // 0' "$task_file" 2>/dev/null)
+    max_retries=$(jq -r '.max_retries // 3' "$task_file" 2>/dev/null)
 
-    # 原子 mv 到 pending/（防并发重复恢复）
-    if ! mv "$tmp" "$TASKS_DIR/pending/$tid.json" 2>/dev/null; then
-        rm -f "$tmp"
-        return 0  # 被其他进程抢先处理
-    fi
-    rm -f "$task_file"
+    local new_count=$((retry_count + 1))
+    local now_ts
+    now_ts=$(get_timestamp)
 
-    # 发射恢复事件
-    emit_event "task.recovered.${reason}" "" "task_id=$tid" "original_claimer=$original_claimer"
+    # 构造 retry_history 条目
+    local history_entry
+    history_entry=$(jq -n \
+        --arg failed_at "$now_ts" \
+        --arg reason "watchdog:$reason" \
+        --arg failed_by "$original_claimer" \
+        '{failed_at: $failed_at, reason: $reason, failed_by: $failed_by}')
 
-    # 通知 inspector（高优先级消息写入收件箱）
-    local notify_id="sys-watchdog-$(date +%s)-${tid}"
     local reason_text=""
     case "$reason" in
         liveness) reason_text="工蜂 pane 已崩溃" ;;
         ttl)      reason_text="处理超时 (TTL=${TASK_PROCESSING_TTL}s)" ;;
     esac
 
-    mkdir -p "${INBOX_DIR}/inspector"
-    jq -n \
-        --arg id "$notify_id" \
-        --arg from "watchdog" \
-        --arg to "inspector" \
-        --arg content "[任务恢复] 任务 $tid 已从 processing 恢复到 pending。原因: ${reason_text}。原认领者: ${original_claimer}。" \
-        --arg timestamp "$(get_timestamp)" \
-        --arg status "pending" \
-        --arg priority "high" \
-        '{id:$id, from:$from, to:$to, content:$content, timestamp:$timestamp, status:$status, reply_to:null, priority:$priority}' \
-        > "${INBOX_DIR}/inspector/${notify_id}.json"
+    if [[ $new_count -gt $max_retries ]]; then
+        # === 重试耗尽: 移入 failed/ ===
+        mkdir -p "$TASKS_DIR/failed"
+        local tmp="$TASKS_DIR/processing/${tid}.json.tmp"
+        if ! jq \
+            --argjson new_count "$new_count" \
+            --arg now_ts "$now_ts" \
+            --argjson entry "$history_entry" \
+            '
+            .status = "failed"
+            | .claimed_by = null
+            | .claimed_at = null
+            | .retry_count = $new_count
+            | .failed_at = $now_ts
+            | .fail_reason = "watchdog: 重试耗尽"
+            | .retry_history = ((.retry_history // []) + [$entry])
+            ' "$task_file" > "$tmp" 2>/dev/null; then
+            rm -f "$tmp"
+            return 1
+        fi
 
-    log_info "[watchdog] 已恢复任务: $tid (原因: $reason_text, 原认领者: $original_claimer)"
+        if ! mv "$tmp" "$TASKS_DIR/failed/$tid.json" 2>/dev/null; then
+            rm -f "$tmp"
+            return 0
+        fi
+        rm -f "$task_file"
+
+        emit_event "task.exhausted" "" "task_id=$tid" "retry_count=$new_count" "max_retries=$max_retries" "reason=watchdog:$reason"
+
+        # 通知 inspector
+        local notify_id="sys-watchdog-exhausted-$(date +%s)-${tid}"
+        mkdir -p "${INBOX_DIR}/inspector"
+        jq -n \
+            --arg id "$notify_id" \
+            --arg from "watchdog" \
+            --arg to "inspector" \
+            --arg content "[任务失败] 任务 $tid 重试耗尽 ($new_count/$max_retries)。原因: ${reason_text}。原认领者: ${original_claimer}。请人工介入。" \
+            --arg timestamp "$now_ts" \
+            --arg status "pending" \
+            --arg priority "high" \
+            '{id:$id, from:$from, to:$to, content:$content, timestamp:$timestamp, status:$status, reply_to:null, priority:$priority}' \
+            > "${INBOX_DIR}/inspector/${notify_id}.json"
+
+        log_info "[watchdog] 任务重试耗尽: $tid ($new_count/$max_retries, 原因: $reason_text, 原认领者: $original_claimer)"
+    else
+        # === 正常恢复: 移回 pending/ ===
+        # 计算退避延迟（使用 WATCHDOG_INTERVAL 作为基础，避免快速翻车循环）
+        local delay=$(( (1 << new_count) * ${TASK_RETRY_BASE_DELAY:-60} ))
+        local retry_after
+        retry_after=$(date -v+${delay}S '+%Y-%m-%d %H:%M:%S' 2>/dev/null \
+            || date -d "+${delay} seconds" '+%Y-%m-%d %H:%M:%S' 2>/dev/null \
+            || echo "")
+
+        mkdir -p "$TASKS_DIR/pending"
+        local tmp="$TASKS_DIR/processing/${tid}.json.tmp"
+        if ! jq \
+            --argjson new_count "$new_count" \
+            --arg now_ts "$now_ts" \
+            --arg retry_after "$retry_after" \
+            --argjson entry "$history_entry" \
+            '
+            .status = "pending"
+            | .claimed_by = null
+            | .claimed_at = null
+            | .retry_count = $new_count
+            | .failed_at = $now_ts
+            | .retry_after = $retry_after
+            | .retry_history = ((.retry_history // []) + [$entry])
+            ' "$task_file" > "$tmp" 2>/dev/null; then
+            rm -f "$tmp"
+            return 1  # jq 失败，保留原文件不动
+        fi
+
+        # 原子 mv 到 pending/（防并发重复恢复）
+        if ! mv "$tmp" "$TASKS_DIR/pending/$tid.json" 2>/dev/null; then
+            rm -f "$tmp"
+            return 0  # 被其他进程抢先处理
+        fi
+        rm -f "$task_file"
+
+        # 发射恢复事件（含 retry_count）
+        emit_event "task.recovered.${reason}" "" "task_id=$tid" "original_claimer=$original_claimer" "retry_count=$new_count"
+
+        # 通知 inspector（高优先级消息写入收件箱）
+        local notify_id="sys-watchdog-$(date +%s)-${tid}"
+        mkdir -p "${INBOX_DIR}/inspector"
+        jq -n \
+            --arg id "$notify_id" \
+            --arg from "watchdog" \
+            --arg to "inspector" \
+            --arg content "[任务恢复] 任务 $tid 已从 processing 恢复到 pending (重试 $new_count/$max_retries)。原因: ${reason_text}。原认领者: ${original_claimer}。" \
+            --arg timestamp "$now_ts" \
+            --arg status "pending" \
+            --arg priority "high" \
+            '{id:$id, from:$from, to:$to, content:$content, timestamp:$timestamp, status:$status, reply_to:null, priority:$priority}' \
+            > "${INBOX_DIR}/inspector/${notify_id}.json"
+
+        log_info "[watchdog] 已恢复任务: $tid (重试 $new_count/$max_retries, 原因: $reason_text, 原认领者: $original_claimer)"
+    fi
 }
 
 # 发送空闲告警到 inspector
@@ -143,7 +225,7 @@ _watchdog_check_one_task() {
         local now claimed_epoch
         now=$(date +%s)
         # macOS: date -j -f, Linux: date -d
-        claimed_epoch=$(date -j -f '%Y-%m-%d %H:%M:%S' "$claimed_at" +%s 2>/dev/null \
+        claimed_epoch=$(date -j -f "${LOG_TIMESTAMP_FORMAT:-%Y-%m-%d %H:%M:%S}" "$claimed_at" +%s 2>/dev/null \
             || date -d "$claimed_at" +%s 2>/dev/null \
             || echo "0")
         # 时间解析失败（epoch=0）时跳过 TTL 检测，避免误触发恢复
@@ -249,6 +331,161 @@ _check_and_rotate_logs() {
 }
 
 # =============================================================================
+# 子任务停滞检测
+# =============================================================================
+
+# 检查已拆分的父任务是否存在子任务停滞
+# 遍历 processing/ 中 split_status="split" 的父任务，检测子任务进度
+_watchdog_check_subtask_stall() {
+    shopt -s nullglob
+    for f in "$TASKS_DIR/processing/"*.json; do
+        [[ -f "$f" ]] || continue
+
+        local split_status
+        split_status=$(jq -r '.split_status // ""' "$f" 2>/dev/null)
+        [[ "$split_status" == "split" ]] || continue
+
+        local parent_id
+        parent_id=$(jq -r '.id' "$f" 2>/dev/null)
+
+        # 统计子任务进度
+        local completed=0 failed=0 processing=0 pending=0 blocked=0
+        local latest_activity=0
+
+        while IFS= read -r sub_id; do
+            [[ -z "$sub_id" ]] && continue
+            if [[ -f "$TASKS_DIR/completed/$sub_id.json" ]]; then
+                ((completed++)) || true
+                local sub_completed_at
+                sub_completed_at=$(jq -r '.completed_at // ""' "$TASKS_DIR/completed/$sub_id.json" 2>/dev/null)
+                if [[ -n "$sub_completed_at" ]]; then
+                    local sub_cat_epoch
+                    sub_cat_epoch=$(date -j -f "${LOG_TIMESTAMP_FORMAT:-%Y-%m-%d %H:%M:%S}" "$sub_completed_at" +%s 2>/dev/null \
+                        || date -d "$sub_completed_at" +%s 2>/dev/null || echo "0")
+                    [[ "$sub_cat_epoch" -gt "$latest_activity" ]] && latest_activity="$sub_cat_epoch"
+                fi
+            elif [[ -f "$TASKS_DIR/failed/$sub_id.json" ]]; then
+                ((failed++)) || true
+            elif [[ -f "$TASKS_DIR/processing/$sub_id.json" ]]; then
+                ((processing++)) || true
+                local clat
+                clat=$(jq -r '.claimed_at // ""' "$TASKS_DIR/processing/$sub_id.json" 2>/dev/null)
+                if [[ -n "$clat" ]]; then
+                    local clat_epoch
+                    clat_epoch=$(date -j -f "${LOG_TIMESTAMP_FORMAT:-%Y-%m-%d %H:%M:%S}" "$clat" +%s 2>/dev/null \
+                        || date -d "$clat" +%s 2>/dev/null || echo "0")
+                    [[ "$clat_epoch" -gt "$latest_activity" ]] && latest_activity="$clat_epoch"
+                fi
+            elif [[ -f "$TASKS_DIR/pending/$sub_id.json" ]]; then
+                ((pending++)) || true
+            elif [[ -f "$TASKS_DIR/blocked/$sub_id.json" ]]; then
+                ((blocked++)) || true
+            fi
+        done < <(jq -r '.subtasks // [] | .[]' "$f" 2>/dev/null)
+
+        # 如果有子任务在 processing → 跳过（已有 liveness/TTL 检测覆盖）
+        [[ $processing -gt 0 ]] && continue
+
+        # 如果有失败的子任务 → 通知 inspector "建议 re-split"（小时级去重）
+        if [[ $failed -gt 0 ]]; then
+            local hour_window=$(( $(date +%s) / 3600 ))
+            local notify_id="sys-subtask-fail-${hour_window}-${parent_id}"
+            mkdir -p "${INBOX_DIR}/inspector"
+            # 同一小时内不重复发送
+            [[ -f "${INBOX_DIR}/inspector/${notify_id}.json" ]] && continue
+            jq -n \
+                --arg id "$notify_id" \
+                --arg from "watchdog" \
+                --arg to "inspector" \
+                --arg content "[子任务失败] 父任务 $parent_id 有 $failed 个子任务失败 (完成: $completed, 待认领: $pending, 阻塞: $blocked)。建议执行 re-split: swarm-msg.sh re-split $parent_id" \
+                --arg timestamp "$(get_timestamp)" \
+                --arg status "pending" \
+                --arg priority "high" \
+                '{id:$id, from:$from, to:$to, content:$content, timestamp:$timestamp, status:$status, reply_to:null, priority:$priority}' \
+                > "${INBOX_DIR}/inspector/${notify_id}.json"
+            log_info "[watchdog] 子任务失败告警: 父任务 $parent_id ($failed 个失败)"
+            continue
+        fi
+
+        # 无活动时间 → 回退到父任务 claimed_at
+        if [[ "$latest_activity" -eq 0 ]]; then
+            local parent_claimed
+            parent_claimed=$(jq -r '.claimed_at // ""' "$f" 2>/dev/null)
+            if [[ -n "$parent_claimed" ]]; then
+                latest_activity=$(date -j -f "${LOG_TIMESTAMP_FORMAT:-%Y-%m-%d %H:%M:%S}" "$parent_claimed" +%s 2>/dev/null \
+                    || date -d "$parent_claimed" +%s 2>/dev/null || echo "0")
+            fi
+        fi
+
+        # 距今超过 SUBTASK_STALL_TTL → 通知 inspector "子任务停滞"（小时级去重）
+        if [[ "$latest_activity" -gt 0 ]]; then
+            local now
+            now=$(date +%s)
+            if [[ $((now - latest_activity)) -ge ${SUBTASK_STALL_TTL:-7200} ]]; then
+                local hour_window=$(( now / 3600 ))
+                local notify_id="sys-subtask-stall-${hour_window}-${parent_id}"
+                mkdir -p "${INBOX_DIR}/inspector"
+                # 同一小时内不重复发送
+                [[ -f "${INBOX_DIR}/inspector/${notify_id}.json" ]] && continue
+                jq -n \
+                    --arg id "$notify_id" \
+                    --arg from "watchdog" \
+                    --arg to "inspector" \
+                    --arg content "[子任务停滞] 父任务 $parent_id 的子任务超过 ${SUBTASK_STALL_TTL:-7200}s 无活动 (完成: $completed, 待认领: $pending, 阻塞: $blocked)。请检查。" \
+                    --arg timestamp "$(get_timestamp)" \
+                    --arg status "pending" \
+                    --arg priority "high" \
+                    '{id:$id, from:$from, to:$to, content:$content, timestamp:$timestamp, status:$status, reply_to:null, priority:$priority}' \
+                    > "${INBOX_DIR}/inspector/${notify_id}.json"
+                log_info "[watchdog] 子任务停滞: 父任务 $parent_id (无活动超过 ${SUBTASK_STALL_TTL:-7200}s)"
+            fi
+        fi
+    done
+
+    # === 检测 escalated 超时（上报后 supervisor 迟迟未处理）===
+    for f in "$TASKS_DIR/processing/"*.json; do
+        [[ -f "$f" ]] || continue
+
+        local esc_status esc_at
+        esc_status=$(jq -r '.escalated.status // ""' "$f" 2>/dev/null)
+        [[ "$esc_status" == "pending" ]] || continue
+
+        local tid
+        tid=$(jq -r '.id' "$f" 2>/dev/null)
+
+        esc_at=$(jq -r '.escalated.escalated_at // ""' "$f" 2>/dev/null)
+        [[ -n "$esc_at" && "$esc_at" != "null" ]] || continue
+
+        local esc_epoch
+        esc_epoch=$(date -j -f "${LOG_TIMESTAMP_FORMAT:-%Y-%m-%d %H:%M:%S}" "$esc_at" +%s 2>/dev/null \
+            || date -d "$esc_at" +%s 2>/dev/null || echo "0")
+        [[ "$esc_epoch" -gt 0 ]] || continue
+
+        local now
+        now=$(date +%s)
+        if [[ $((now - esc_epoch)) -ge ${ESCALATE_STALL_TTL:-3600} ]]; then
+            local hour_window=$(( now / 3600 ))
+            local notify_id="sys-escalate-stall-${hour_window}-${tid}"
+            mkdir -p "${INBOX_DIR}/supervisor"
+            [[ -f "${INBOX_DIR}/supervisor/${notify_id}.json" ]] && continue
+            jq -n \
+                --arg id "$notify_id" \
+                --arg from "watchdog" \
+                --arg to "supervisor" \
+                --arg content "[上报超时] 任务 $tid 已上报超过 ${ESCALATE_STALL_TTL:-3600}s 未被处理。请尽快使用 expand-subtask 展开或用 claim 重新认领。" \
+                --arg timestamp "$(get_timestamp)" \
+                --arg status "pending" \
+                --arg priority "high" \
+                '{id:$id, from:$from, to:$to, content:$content, timestamp:$timestamp, status:$status, reply_to:null, priority:$priority}' \
+                > "${INBOX_DIR}/supervisor/${notify_id}.json"
+            log_info "[watchdog] 上报超时: 任务 $tid (上报超过 ${ESCALATE_STALL_TTL:-3600}s)"
+        fi
+    done
+
+    shopt -u nullglob
+}
+
+# =============================================================================
 # 主函数: 启动看门狗守护进程
 # =============================================================================
 
@@ -271,7 +508,10 @@ start_task_watchdog() {
             done
             shopt -u nullglob
 
-            # 新增：日志轮转检查（按 LOG_ROTATE_INTERVAL 频率）
+            # 子任务停滞检测
+            _watchdog_check_subtask_stall
+
+            # 日志轮转检查（按 LOG_ROTATE_INTERVAL 频率）
             local now
             now=$(date +%s)
             if (( now - last_rotate_check >= LOG_ROTATE_INTERVAL )); then

@@ -84,6 +84,7 @@
 | `swarm-msg.sh publish <type> "<title>" --assign <role> -d "<描述>"` | 定向派发任务 |
 | `swarm-msg.sh group-status <group-id>` | 查看任务组进度 |
 | `swarm-msg.sh list-tasks [--all]` | 列出任务 |
+| `swarm-msg.sh escalate-task <task-id> "原因"` | 任务太复杂时上报 supervisor 拆分（自动认领下一个） |
 
 ### 行为准则
 
@@ -91,3 +92,4 @@
 2. **及时回复**: 收到消息后优先处理并回复
 3. **接口先行**: 多角色协作时，先定义接口契约再分头实现
 4. **完成通知**: 任务完成后通知发起者
+5. **任务过于复杂时上报**: 如果任务无法独立完成（需要多个子模块/多角色协作），用 `escalate-task` 上报 supervisor 并说明建议拆分方案，不要硬做

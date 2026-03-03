@@ -362,9 +362,28 @@ fi
 
 if ! command -v flock &>/dev/null; then
     # macOS 不自带 flock（属于 util-linux）。
-    # 完整的 fd 级 flock 在纯 shell 中无法可靠模拟（需要对已打开的 fd 加锁），
-    # 蜂群场景中并发写入频率低（每个角色间隔数秒以上），降级为 no-op 是最安全的做法。
-    # 如需强锁，可安装: brew install util-linux
+    # 使用 mkdir 原子操作实现自旋锁，零调用点修改。
+
+    # 通过 fd 的 inode 构造唯一锁目录路径
+    _swarm_flock_dir() {
+        local fd="$1"
+        local inode
+        inode=$(stat -f '%d_%i' /dev/fd/"$fd" 2>/dev/null) || return 1
+        echo "/tmp/.swarm-flock-${inode}"
+    }
+
+    # 检查锁目录持有者是否仍存活（死锁检测）
+    _swarm_flock_stale_check() {
+        local lock_dir="$1"
+        local pid_file="$lock_dir/pid"
+        [[ -f "$pid_file" ]] || return 0  # 无 pid 文件视为 stale
+        local holder_pid
+        holder_pid=$(cat "$pid_file" 2>/dev/null) || return 0
+        # kill -0 检查进程是否存活
+        kill -0 "$holder_pid" 2>/dev/null && return 1  # 存活，非 stale
+        return 0  # 进程已死，stale
+    }
+
     flock() {
         local mode="" fd=""
         while [[ $# -gt 0 ]]; do
@@ -373,8 +392,50 @@ if ! command -v flock &>/dev/null; then
                 *)        fd="$1"; shift ;;
             esac
         done
-        # 降级为无操作
-        :
+
+        [[ -n "$fd" ]] || return 0
+
+        local lock_dir
+        lock_dir=$(_swarm_flock_dir "$fd") || {
+            # stat 失败（fd 无效等），降级为 no-op（安全兜底）
+            return 0
+        }
+
+        if [[ "$mode" == "-u" ]]; then
+            # 解锁: 移除 pid 文件再 rmdir
+            rm -f "$lock_dir/pid" 2>/dev/null
+            rmdir "$lock_dir" 2>/dev/null
+            return 0
+        fi
+
+        # 加锁: mkdir 自旋
+        local attempt=0
+        while ! mkdir "$lock_dir" 2>/dev/null; do
+            ((attempt++))
+            # 每 20 次（约 1s）检查死锁
+            if (( attempt % 20 == 0 )); then
+                if _swarm_flock_stale_check "$lock_dir"; then
+                    rm -f "$lock_dir/pid" 2>/dev/null
+                    rmdir "$lock_dir" 2>/dev/null
+                    continue
+                fi
+            fi
+            # 200 次（约 10s）超时强制清除
+            if (( attempt >= 200 )); then
+                rm -f "$lock_dir/pid" 2>/dev/null
+                rmdir "$lock_dir" 2>/dev/null || { [[ "$lock_dir" == /tmp/.swarm-flock-* ]] && rm -rf "$lock_dir" 2>/dev/null; }
+                continue
+            fi
+            sleep 0.05
+        done
+
+        # 写入持锁进程 PID（$BASHPID 为 subshell 实际 PID，$$ 为父进程 PID）
+        echo "${BASHPID:-$$}" > "$lock_dir/pid" 2>/dev/null
+
+        # subshell 退出自动释放
+        trap "rm -f '$lock_dir/pid' 2>/dev/null; rmdir '$lock_dir' 2>/dev/null" EXIT
+
+        return 0
     }
 fi
 
@@ -541,11 +602,11 @@ ${team_info:-（暂无其他成员）}
 | swarm-msg.sh complete-task <id> "result" | 完成任务并反馈 |
 | swarm-msg.sh group-status [group-id] | 查看任务组进度 |
 
-任务组示例（带依赖）:
+任务组示例（带依赖 + 指派）:
   G=\$(swarm-msg.sh create-group "用户注册系统")
-  T1=\$(swarm-msg.sh publish develop "实现 API" -g \$G)
-  T2=\$(swarm-msg.sh publish develop "设计数据库" -g \$G)
-  T3=\$(swarm-msg.sh publish review "审核代码" -g \$G --depends \$T1,\$T2)
+  T1=\$(swarm-msg.sh publish develop "实现 API" -g \$G --assign backend)
+  T2=\$(swarm-msg.sh publish develop "设计数据库" -g \$G --assign database)
+  T3=\$(swarm-msg.sh publish review "审核代码" -g \$G --assign reviewer --depends \$T1,\$T2)
 
 ### 行为准则
 1. 当任务涉及其他角色的职责时，主动用 swarm-msg.sh send 联系对方
