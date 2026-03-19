@@ -166,6 +166,12 @@ swarm-msg.sh cancel-task <task-id> "Requirements changed"
 # View task audit trail
 swarm-msg.sh flow-log <task-id>
 
+# Set task priority
+swarm-msg.sh set-priority <task-id> high   # high/normal/low
+
+# Associate PRD to task group
+swarm-msg.sh set-prd <group-id> "PRD content..."
+
 # Manual approval (inspector only, used in strict quality gate mode)
 swarm-msg.sh approve-task <task-id> "Approved after manual review"
 swarm-msg.sh reject-task <task-id> "Test coverage insufficient"
@@ -366,6 +372,7 @@ All parameters are centralized in `config/defaults.conf` with 3-tier priority: e
 | `SILENCE_THRESHOLD` | 5 | Pane watcher silence threshold (seconds, how long no output = done) |
 | `STALL_THRESHOLD` | 1800 | Active pane no-output threshold (seconds, triggers stall notification) |
 | `PASTE_DELAY` | 0.3 | Delay after paste-buffer (seconds) |
+| `CODEX_PASTE_DELAY` | 0.5 | Delay after Codex CLI paste-buffer (seconds, Kitty keyboard protocol needs longer wait) |
 | `RESUME_ORPHAN_RECOVERY` | true | Recover orphan tasks in processing/ on resume |
 | `RESUME_SUMMARY_MAX_COMMITS` | 20 | Max git commits in resume summary |
 | `RESUME_SUMMARY_MAX_TASKS` | 10 | Max completed/pending tasks in resume summary |
@@ -399,6 +406,7 @@ swarmesh/
 │   ├── swarm-detect.sh      # CLI status detection
 │   ├── swarm-events.sh      # Event system
 │   ├── swarm-workflow.sh    # Workflow engine
+│   ├── swarm-lint.sh        # Role config linter
 │   ├── swarm-lib.sh         # Shared function library
 │   └── lib/                 # swarm-msg submodules
 │       ├── msg-story.sh     # Story files
@@ -625,6 +633,12 @@ swarm-msg.sh cancel-task <task-id> "需求变更"
 # 查看任务流转审计记录
 swarm-msg.sh flow-log <task-id>
 
+# 修改任务优先级
+swarm-msg.sh set-priority <task-id> high   # high/normal/low
+
+# 关联 PRD 到任务组
+swarm-msg.sh set-prd <group-id> "PRD 内容..."
+
 # 人工审批（仅 inspector，质量门严格模式下使用）
 swarm-msg.sh approve-task <task-id> "审核通过"
 swarm-msg.sh reject-task <task-id> "测试覆盖率不足"
@@ -824,6 +838,7 @@ swarm-msg.sh set-limit 0      # 取消上限
 | `SILENCE_THRESHOLD` | 5 | Pane 静默阈值（秒，多久没输出算完成） |
 | `STALL_THRESHOLD` | 1800 | Active 状态无新输出阈值（秒，触发 stall 通知） |
 | `PASTE_DELAY` | 0.3 | paste-buffer 后等待延迟（秒） |
+| `CODEX_PASTE_DELAY` | 0.5 | Codex CLI paste 后等待延迟（秒，Kitty keyboard protocol 需要更长等待） |
 | `RESUME_ORPHAN_RECOVERY` | true | 恢复时是否回收 processing 中的孤儿任务 |
 | `RESUME_SUMMARY_MAX_COMMITS` | 20 | 恢复摘要中最多包含的 git commit 数 |
 | `RESUME_SUMMARY_MAX_TASKS` | 10 | 恢复摘要中最多包含的已完成/未完成任务数 |
@@ -857,6 +872,7 @@ swarmesh/
 │   ├── swarm-detect.sh      # CLI 状态检测
 │   ├── swarm-events.sh      # 事件系统
 │   ├── swarm-workflow.sh    # 工作流引擎
+│   ├── swarm-lint.sh        # 角色配置完整性检查
 │   ├── swarm-lib.sh         # 共享函数库
 │   └── lib/                 # swarm-msg 拆分模块
 │       ├── msg-story.sh     # Story 文件
