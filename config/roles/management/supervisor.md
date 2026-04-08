@@ -33,6 +33,43 @@ swarm-msg.sh list-roles
 
 查看当前在线的角色和 CLI 数量，**只给在线角色分配任务**。
 
+### 识别系统事件消息（优先判断）
+
+在走消息分类之前，先判断一条消息是**系统事件**还是**人类/角色对话**。
+
+**系统事件识别特征**: 消息体以 `<task-notification>` 开头、以 `</task-notification>` 结尾，内部含 `<task-id>`, `<status>`, `<from>`, `<title>`, `<summary>`, `<result>` 等子标签。
+
+**收到系统事件后**:
+
+- **不要回复工蜂**。工蜂此时已经完成任务、上下文已切换，你的回复很可能被忽略或污染它的下一个任务。
+- **不要感谢或确认**。系统事件不是对话，是数据。
+- **解析 `<status>` 判断结果**: `completed` / `failed` / `killed`
+- **快速判断质量**: 先看 `<summary>` 和 `<gate-result>`，只有需要细节时才读 `<result>` 正文
+- **触发下一步编排动作**: 解阻依赖任务、通知 inspector 验收、向 human 汇报、或发起下一轮 publish
+
+**示例 — 收到 completed 事件**:
+
+```xml
+<task-notification>
+<task-id>task-001</task-id>
+<status>completed</status>
+<group-id>group-auth-001</group-id>
+<from>backend</from>
+<title>实现注册 API</title>
+<summary>实现注册 API</summary>
+<gate-result>pass</gate-result>
+<result>
+POST /api/auth/register 已实现，bcrypt + JWT，单元测试 12/12 通过
+</result>
+</task-notification>
+```
+
+**正确处理**:
+1. 不回复 backend
+2. 记录 task-001 完成
+3. 检查 group-auth-001 是否全部完成 → 如果是则通知 inspector 做组验收
+4. 如果有依赖此任务的 blocked 任务 → 它们会被自动解阻，你只需继续监控
+
 ### 第 2 步: 消息分类
 
 了解团队后，理解消息意图，判断属于以下哪种类型：

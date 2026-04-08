@@ -1048,6 +1048,52 @@ cmd_claim() {
 }
 
 # =============================================================================
+# 辅助函数: 构建 <task-notification> XML 包装（P1 结构化回报）
+# =============================================================================
+#
+# 生成 Claude Code coordinatorMode.ts 规范的 <task-notification> 包装，
+# 让 supervisor 能机器区分"系统事件"与"对话消息"。supervisor.md 的
+# "系统事件识别"章节约定了识别规则。
+#
+# 参数:
+#   $1 - task_id
+#   $2 - status (completed / failed / killed)
+#   $3 - from (工蜂 instance 名)
+#   $4 - title (任务标题)
+#   $5 - group_id (可为空或 "null")
+#   $6 - summary (一行摘要，空则回退到 title)
+#   $7 - body (result / reason 正文，可空)
+#   $8 - gate_result (可空，如 "build: pass, test: 42/42")
+#
+_build_task_notification_xml() {
+    local task_id="$1" status="$2" from="$3" title="$4"
+    local group_id="${5:-}" summary="${6:-}" body="${7:-}" gate="${8:-}"
+
+    [[ -z "$summary" ]] && summary="$title"
+
+    local xml=""
+    xml+=$'<task-notification>\n'
+    xml+="<task-id>${task_id}</task-id>"$'\n'
+    xml+="<status>${status}</status>"$'\n'
+    if [[ -n "$group_id" && "$group_id" != "null" ]]; then
+        xml+="<group-id>${group_id}</group-id>"$'\n'
+    fi
+    xml+="<from>${from}</from>"$'\n'
+    xml+="<title>${title}</title>"$'\n'
+    xml+="<summary>${summary}</summary>"$'\n'
+    if [[ -n "$gate" ]]; then
+        xml+="<gate-result>${gate}</gate-result>"$'\n'
+    fi
+    if [[ -n "$body" ]]; then
+        xml+=$'<result>\n'
+        xml+="${body}"$'\n'
+        xml+=$'</result>\n'
+    fi
+    xml+=$'</task-notification>'
+    printf '%s' "$xml"
+}
+
+# =============================================================================
 # 子命令: complete-task (完成任务)
 # =============================================================================
 
@@ -1073,8 +1119,24 @@ cmd_complete_task() {
 
     mkdir -p "$TASKS_DIR/completed"
     local ctmp="$TASKS_DIR/processing/${task_id}.json.tmp"
+    # 同时写入 .result（向后兼容的纯字符串）和 .notification（结构化元数据，
+    # 版本化以便后续演进；gate_result 先占位为 "pass"，Gate 失败时根本走不到这里）
     if jq --arg result "$result" --arg at "$completed_at" --arg actor "$my_instance" \
-        '.status = "completed" | .result = $result | .completed_at = $at
+        '.status = "completed"
+         | .result = $result
+         | .completed_at = $at
+         | .notification = {
+             version: "1",
+             task_id: .id,
+             status: "completed",
+             group_id: (.group_id // null),
+             from: $actor,
+             title: .title,
+             summary: .title,
+             result: $result,
+             gate_result: "pass",
+             completed_at: $at
+           }
          | .flow_log = ((.flow_log // []) + [{
              ts: $at, action: "completed",
              from_status: "processing", to_status: "completed",
@@ -1089,16 +1151,23 @@ cmd_complete_task() {
         die "complete-task: jq 处理失败: $task_id"
     fi
 
-    emit_event "task.completed_by_queue" "$my_instance" "task_id=$task_id"
+    # 提取通知所需字段
+    local from_id task_title group_id
+    from_id=$(jq -r '.from' "$TASKS_DIR/completed/$task_id.json")
+    task_title=$(jq -r '.title' "$TASKS_DIR/completed/$task_id.json")
+    group_id=$(jq -r '.group_id // ""' "$TASKS_DIR/completed/$task_id.json")
+
+    emit_event "task.completed_by_queue" "$my_instance" "task_id=$task_id" "summary=$task_title"
 
     # 通知发布者（Gate 已通过，此通知可信）
-    local from_id
-    from_id=$(jq -r '.from' "$TASKS_DIR/completed/$task_id.json")
-    local task_title
-    task_title=$(jq -r '.title' "$TASKS_DIR/completed/$task_id.json")
+    # 包装为 <task-notification> XML，让 supervisor 能机器区分系统事件与对话
+    local notify_content
+    notify_content=$(_build_task_notification_xml \
+        "$task_id" "completed" "$my_instance" "$task_title" \
+        "$group_id" "$task_title" "$result" "pass")
 
     _unified_notify "$from_id" \
-        "[任务完成] $task_title (ID: $task_id)"$'\n'"结果: $result" \
+        "$notify_content" \
         "task.completed" "high"
 
     info "任务已完成: $task_id"
@@ -1242,25 +1311,32 @@ cmd_fail_task() {
         rm -f "$task_file"
         rm -f "$TASKS_DIR/processing/${task_id}.op.lock" "$TASKS_DIR/processing/${task_id}.compose.lock" 2>/dev/null
 
-        emit_event "task.exhausted" "$my_instance" "task_id=$task_id" "retry_count=$new_count" "max_retries=$max_retries"
+        emit_event "task.exhausted" "$my_instance" "task_id=$task_id" "retry_count=$new_count" "max_retries=$max_retries" "summary=重试耗尽"
 
         # 更新 Story
         _story_update_task "$task_id" "failed" "重试耗尽 ($new_count/$max_retries, 最终原因: $reason)"
 
-        # 通知 inspector + 发布者
-        local from_id
+        # 通知 inspector + 发布者（统一用 <task-notification> 包装）
+        local from_id task_title group_id
         from_id=$(jq -r '.from' "$TASKS_DIR/failed/$task_id.json")
-        local task_title
         task_title=$(jq -r '.title' "$TASKS_DIR/failed/$task_id.json")
+        group_id=$(jq -r '.group_id // ""' "$TASKS_DIR/failed/$task_id.json")
+
+        local fail_summary="重试耗尽 ($new_count/$max_retries)"
+        local fail_body="最终失败原因: $reason"
+        local fail_notify_content
+        fail_notify_content=$(_build_task_notification_xml \
+            "$task_id" "failed" "$my_instance" "$task_title" \
+            "$group_id" "$fail_summary" "$fail_body" "")
 
         # 通知 inspector（高优先级）
         _unified_notify "inspector" \
-            "[任务失败] 任务 $task_id ($task_title) 重试耗尽 ($new_count/$max_retries)。最终原因: $reason。请人工介入。" \
+            "$fail_notify_content" \
             "task.exhausted" "high"
 
         # 通知发布者（高优先级）
         _unified_notify "$from_id" \
-            "[任务失败] $task_id ($task_title) 重试耗尽 ($new_count/$max_retries)，已移入 failed/，请人工介入" \
+            "$fail_notify_content" \
             "task.exhausted" "high"
 
         info "任务重试耗尽，已移入 failed/: $task_id ($new_count/$max_retries)"
