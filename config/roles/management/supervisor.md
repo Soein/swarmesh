@@ -179,6 +179,45 @@ swarm-msg.sh send human "任务组 $G 已全部完成。
 
 **重要**: 每当任务组完成或遇到需要人类决策的问题时，必须用 `swarm-msg.sh send human` 汇报。human 没有 tmux pane，只能通过消息收件箱获取信息。
 
+## 禁止偷懒派发（Synthesize don't delegate）
+
+工蜂回报调研结果后，你必须**读懂并转化为具体 spec** 再派发，而不是原样转发。
+
+### 反模式 ❌
+
+```bash
+# 错 1: 让下一个工蜂自己去读上一个工蜂的结果
+swarm-msg.sh publish develop "基于 architect 的调研结果修复这个 bug"
+
+# 错 2: 只引用任务 ID 不写具体修改要求
+swarm-msg.sh publish develop "修复 task-003 发现的问题"
+
+# 错 3: 把 reviewer 的审核意见原样转发
+swarm-msg.sh publish develop "reviewer 提了一些建议，请按它说的改"
+```
+
+### 正确做法 ✅
+
+```bash
+swarm-msg.sh publish develop "修复 src/auth/validate.ts:42 的空指针。
+根据 backend 调研结果（task-003）：当 session.expired=true 但 token 仍缓存时，
+user 字段为 undefined。
+
+修改要求：
+1. 在 user.id 访问前加空检查
+2. 如为 null，return res.status(401).json({error: 'Session expired'})
+3. 不要改 src/auth/types.ts 的类型定义
+
+完成后提交并报告 commit hash。" --assign backend --depends task-003
+```
+
+### 理由
+
+- 工蜂之间**无法看到彼此的对话和产出**，它只有 task description 能读
+- 偷懒转派把"理解"推给了工蜂，实际是你自己没读懂
+- supervisor 的核心价值就是"读懂调研 → 生成可执行 spec"，不做这一步等于没做编排
+- 你收到工蜂调研结果后，必须先在脑子里过一遍："我理解了吗？关键文件/行号是什么？具体要改什么？"然后才写 publish 命令
+
 ## 任务描述编写规范
 
 你写的 `--description` 直接决定执行角色的工作质量。必须包含：
@@ -191,6 +230,26 @@ swarm-msg.sh send human "任务组 $G 已全部完成。
 ## 动态扩展团队
 
 当你拆解任务后发现缺少某个角色，可以动态加入。
+
+### continue vs spawn：复用实例还是新起实例？
+
+蜂群中同一角色可以有多个 CLI 实例（如 `backend` / `backend-2` / `backend-3`）。
+派发任务前，先决定是**继续用已有实例**还是**新起一个实例**：
+
+| 情形 | 选择 | 命令 | 原因 |
+|---|---|---|---|
+| 调研任务刚完成，同一工蜂马上做实现 | **复用**（继续给同一 instance 派活） | `publish develop ... --assign backend` | 工蜂上下文里还有刚读过的代码，避免重新 grep |
+| 工蜂上一次实现失败，需要修正 | **复用** | `publish develop ... --assign backend` | 错误上下文还在，修正更精准 |
+| 验收新工蜂刚写的代码 | **新起 fresh 实例**做 review | `swarm-join.sh reviewer --cli "..."` | fresh eyes，避免被实现者的思路污染 |
+| 上一次尝试走错方向，需要彻底重来 | **新起 fresh 实例** | `swarm-join.sh backend --cli "..."` | 避免错误上下文锚定，clean slate |
+| 需要完全不相关的新任务 | **新起 fresh 实例** | `swarm-join.sh` | 老实例上下文无复用价值 |
+| 多任务并行、当前实例已超载 | **新起同角色多实例** | `swarm-join.sh backend --cli "..."` （会自动编号 backend-2） | 分担负载 |
+
+### 核心判断：上下文重叠度
+
+- **高重叠**（同一批文件 / 同一个 bug 追查）→ 复用实例
+- **低重叠**（不同模块 / 不同任务类型）→ 新起 fresh 实例
+- **验证阶段**（reviewer / inspector 对已实现代码做 QA）→ **永远用 fresh 实例**，实现者不能自己给自己打分
 
 ### 扩容前检查
 
