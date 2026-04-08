@@ -1,0 +1,100 @@
+{
+  "_comment": "tmux-swarm 角色权限默认模板（CLI 无关的语义层）。对应 Claude Code 官方 coordinatorMode.ts 的 Coordinator / InProcessTeammate / AsyncAgent 三层模型。由 scripts/lib/cli-permissions.sh 翻译为各家 CLI 的原生 flag。",
+  "_version": "1",
+
+  "management": {
+    "tier": "coordinator",
+    "fs": "read-only",
+    "exec": "ask",
+    "allow_tools": ["read", "search", "list", "messaging"],
+    "deny_tools": ["edit", "write", "delete"],
+    "allow_bash": [
+      "swarm-msg.sh:*",
+      "swarm-status.sh:*",
+      "swarm-join.sh:*",
+      "swarm-leave.sh:*",
+      "git status",
+      "git log:*",
+      "git diff:*",
+      "git branch:*",
+      "ls:*",
+      "cat:*",
+      "grep:*",
+      "find:*",
+      "jq:*",
+      "echo:*",
+      "wc:*"
+    ],
+    "deny_bash": [
+      "rm:*",
+      "sudo:*",
+      "curl:*",
+      "wget:*",
+      "git push:*",
+      "git commit:*",
+      "git reset:*",
+      "git rebase:*"
+    ]
+  },
+
+  "quality": {
+    "tier": "in_process_teammate",
+    "fs": "read-only",
+    "exec": "on-request",
+    "allow_tools": ["read", "search", "list", "messaging", "test_runner"],
+    "deny_tools": ["edit", "write", "delete"],
+    "allow_bash": [
+      "swarm-msg.sh:*",
+      "git status",
+      "git log:*",
+      "git diff:*",
+      "git branch:*",
+      "npm test:*",
+      "npm run test:*",
+      "npm run lint:*",
+      "pytest:*",
+      "go test:*",
+      "cargo test:*",
+      "cargo check:*",
+      "eslint:*",
+      "ruff:*",
+      "mypy:*",
+      "ls:*",
+      "cat:*",
+      "grep:*",
+      "find:*",
+      "jq:*"
+    ],
+    "deny_bash": [
+      "rm -rf:*",
+      "sudo:*",
+      "curl:*",
+      "wget:*",
+      "git push:*",
+      "git commit:*",
+      "git reset:*"
+    ]
+  },
+
+  "core": {
+    "tier": "async_agent",
+    "fs": "workspace-write",
+    "exec": "never-ask",
+    "allow_tools": ["read", "write", "edit", "search", "list", "messaging", "bash"],
+    "deny_tools": [],
+    "allow_bash": ["*"],
+    "deny_bash": [
+      "sudo:*",
+      "rm -rf /:*",
+      "rm -rf ~:*",
+      "rm -rf .git:*",
+      "git push --force:*",
+      "git push -f:*",
+      "swarm-join.sh:*",
+      "swarm-leave.sh:*",
+      "swarm-msg.sh request-supervisor:*",
+      "swarm-stop.sh:*",
+      "tmux kill-session:*"
+    ]
+  }
+}

@@ -1438,3 +1438,19 @@ start_pane_watcher() {
     ) >/dev/null &
     echo $!
 }
+
+# ===========================================================================
+# 加载扩展模块（放在文件末尾，确保上面所有共享函数已定义）
+# ===========================================================================
+
+# CLI 权限适配器（build_cli_command）
+if [[ -f "${SCRIPTS_DIR}/lib/cli-permissions.sh" ]]; then
+    # shellcheck source=lib/cli-permissions.sh
+    source "${SCRIPTS_DIR}/lib/cli-permissions.sh"
+fi
+
+# CLI 启动器（launch_cli_in_pane, resolve_role_permissions, infer_category_from_config）
+if [[ -f "${SCRIPTS_DIR}/lib/cli-launcher.sh" ]]; then
+    # shellcheck source=lib/cli-launcher.sh
+    source "${SCRIPTS_DIR}/lib/cli-launcher.sh"
+fi
