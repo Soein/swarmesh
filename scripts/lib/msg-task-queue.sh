@@ -640,6 +640,9 @@ _compose_parent() {
 
         # 父任务 processing/ → completed/（先写 tmp 再 mv，确保原子性）
         # 仅写 .notification（不写 .result），summary 标识为子任务归一
+        # gate_result 用 "n/a"：compose 路径不调用 _run_quality_gate，
+        # 父任务的质量保证由各子任务的 gate 累积确认。supervisor 解析
+        # <gate-result> 时看到 "n/a" 应理解为"未独立校验，依赖子任务"
         local completed_at
         completed_at=$(get_timestamp)
         mkdir -p "$TASKS_DIR/completed"
@@ -657,7 +660,7 @@ _compose_parent() {
                  title: .title,
                  summary: "子任务归一完成",
                  result: $result,
-                 gate_result: "pass",
+                 gate_result: "n/a",
                  completed_at: $at
                }
              | .flow_log = ((.flow_log // []) + [{

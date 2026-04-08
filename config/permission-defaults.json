@@ -1,5 +1,7 @@
 {
   "_comment": "tmux-swarm 角色权限默认模板（CLI 无关的语义层）。对应 Claude Code 官方 coordinatorMode.ts 的 Coordinator / InProcessTeammate / AsyncAgent 三层模型。由 scripts/lib/cli-permissions.sh 翻译为各家 CLI 的原生 flag。",
+  "_merge_semantics": "数组字段 (allow_tools/deny_tools/allow_bash/deny_bash) 在 profile 覆盖时做 unique 追加合并，不是替换。详见 cli-launcher.sh::resolve_role_permissions。这意味着 role.permissions 里的额外 deny 规则会与默认规则共存，而不会丢失默认护栏（如 swarm-join.sh:* 防递归派发）。",
+  "_deny_priority_note": "core 类型的 allow_bash 是通配 ['*']，依赖 Claude Code 官方语义: deny 规则优先级高于 allow。已通过反编译源码 bashPermissions.ts:1312 的 'Deny takes priority — return immediately' 确认。Gemini 通过 settings.json tools.exclude 实现同样语义。Codex 仅有粗粒度 sandbox，无细粒度白名单。",
   "_version": "1",
 
   "management": {

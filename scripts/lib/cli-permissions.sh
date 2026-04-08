@@ -87,6 +87,12 @@ _shell_quote() {
 #
 # allow_bash / deny_bash 的模式直接透传为 Bash(pattern)。
 #
+# 安全依赖: core 类型 allow_bash=["*"] (生成裸 Bash) + deny_bash=[...] 同时使用，
+# 依赖 Claude Code 的 deny > allow 优先级。已通过官方源码确认:
+#   restored-src/src/tools/BashTool/bashPermissions.ts:1312
+#   "Deny takes priority — return immediately"
+# 即即使 --allowedTools 含裸 Bash，--disallowedTools Bash(rm:*) 仍会优先生效。
+#
 _build_claude_cmd() {
     local cli="$1" perms="$2"
 

@@ -34,6 +34,13 @@ _CLI_LAUNCHER_LOADED=1
 #   2. $profile_json.permission_defaults[$category]
 #   3. $profile_json.roles[] | select(.name==$role) | .permissions
 #
+# 合并规则:
+#   - 标量/对象字段（tier, fs, exec, ...）: 后者覆盖前者（jq 的 * 运算符）
+#   - 数组字段（allow_tools, deny_tools, allow_bash, deny_bash）:
+#     **三层 unique 追加合并**，而不是替换。
+#     这是关键安全语义：role.permissions 想新增一条 deny 规则时，
+#     默认层的所有 deny 规则必须保留（包括 swarm-join.sh:* 等防递归派发护栏）。
+#
 # 参数:
 #   $1 - role:     角色实例名（如 backend-2）
 #   $2 - category: 角色分类（management / quality / core）
@@ -84,8 +91,19 @@ resolve_role_permissions() {
         [[ -z "$role_override" || "$role_override" == "null" ]] && role_override="{}"
     fi
 
-    # 4. 合并（jq 的 * 运算符做递归合并：后者覆盖前者同名字段）
-    jq -s '.[0] * .[1] * .[2]' \
+    # 4. 合并:
+    #    - 用 * 做递归对象合并（处理 tier/fs/exec 等标量字段）
+    #    - 然后用 + 覆盖式注入 4 个数组字段，每个字段做三层 unique 追加
+    jq -s '
+        . as $layers |
+        ($layers[0] * $layers[1] * $layers[2]) +
+        {
+          allow_tools: ((($layers[0].allow_tools // []) + ($layers[1].allow_tools // []) + ($layers[2].allow_tools // [])) | unique),
+          deny_tools:  ((($layers[0].deny_tools  // []) + ($layers[1].deny_tools  // []) + ($layers[2].deny_tools  // [])) | unique),
+          allow_bash:  ((($layers[0].allow_bash  // []) + ($layers[1].allow_bash  // []) + ($layers[2].allow_bash  // [])) | unique),
+          deny_bash:   ((($layers[0].deny_bash   // []) + ($layers[1].deny_bash   // []) + ($layers[2].deny_bash   // [])) | unique)
+        }
+    ' \
         <(printf '%s' "$base") \
         <(printf '%s' "$profile_override") \
         <(printf '%s' "$role_override")

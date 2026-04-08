@@ -165,6 +165,79 @@ assert_contains "management 禁止 edit" "$mgmt_deny_tools" "edit"
 assert_contains "management 禁止 write" "$mgmt_deny_tools" "write"
 
 # ============================================================================
+# Test 4b: H1 回归 — 数组字段 unique 追加合并（不替换）
+# ============================================================================
+#
+# 关键安全测试：role.permissions 加自定义 deny_bash 时，默认 11 条 deny 规则
+# 必须保留（包括 swarm-join.sh:* 等防递归派发护栏）。修复前 jq * 是替换语义，
+# 用户加一条 deny 会意外解锁所有危险命令。
+
+section "Test 4b: H1 回归 — 数组字段 unique 追加合并"
+
+# 场景 1：role.permissions 加 deny_bash
+fake_profile_a='{"roles":[{"name":"backend","category":"core","permissions":{"deny_bash":["docker:*","npm publish:*"]}}]}'
+merged_a=$(resolve_role_permissions "backend" "core" "$fake_profile_a")
+deny_count_a=$(jq '.deny_bash | length' <<<"$merged_a")
+# 默认 11 + 新增 2 = 13
+assert_eq "deny_bash 总数（默认 11 + 新增 2）" "13" "$deny_count_a"
+
+# 关键护栏必须仍存在
+for rule in "sudo:*" "swarm-join.sh:*" "swarm-leave.sh:*" "swarm-msg.sh request-supervisor:*" "rm -rf /:*" "tmux kill-session:*"; do
+    has=$(jq --arg r "$rule" '.deny_bash | index($r) != null' <<<"$merged_a")
+    assert_eq "默认 deny 保留: $rule" "true" "$has"
+done
+
+# 新增的也生效
+for rule in "docker:*" "npm publish:*"; do
+    has=$(jq --arg r "$rule" '.deny_bash | index($r) != null' <<<"$merged_a")
+    assert_eq "role 新增 deny 生效: $rule" "true" "$has"
+done
+
+# 场景 2：role 加 allow_bash
+fake_profile_b='{"roles":[{"name":"backend","category":"core","permissions":{"allow_bash":["docker:*","kubectl:*"]}}]}'
+merged_b=$(resolve_role_permissions "backend" "core" "$fake_profile_b")
+# core 默认 allow_bash 是 ["*"]，加两条后应该是 ["*","docker:*","kubectl:*"]
+allow_count_b=$(jq '.allow_bash | length' <<<"$merged_b")
+assert_eq "allow_bash 默认 1 + 新增 2" "3" "$allow_count_b"
+has_wildcard=$(jq '.allow_bash | index("*") != null' <<<"$merged_b")
+assert_eq "allow_bash 通配 * 保留" "true" "$has_wildcard"
+
+# 场景 3：profile 中间层 + role 层叠加（三层全部生效）
+fake_profile_c='{
+  "permission_defaults": {
+    "core": {"deny_bash": ["from-profile-layer:*"]}
+  },
+  "roles": [
+    {"name":"backend","category":"core","permissions":{"deny_bash":["from-role-layer:*"]}}
+  ]
+}'
+merged_c=$(resolve_role_permissions "backend" "core" "$fake_profile_c")
+for rule in "sudo:*" "from-profile-layer:*" "from-role-layer:*" "swarm-join.sh:*"; do
+    has=$(jq --arg r "$rule" '.deny_bash | index($r) != null' <<<"$merged_c")
+    assert_eq "三层叠加: $rule" "true" "$has"
+done
+
+# 场景 4：标量字段仍能被 role 层覆盖（不影响后者覆盖语义）
+fake_profile_d='{"roles":[{"name":"backend","category":"core","permissions":{"exec":"ask","fs":"read-only"}}]}'
+merged_d=$(resolve_role_permissions "backend" "core" "$fake_profile_d")
+assert_eq "标量 exec 被 role 覆盖" "ask"       "$(jq -r '.exec' <<<"$merged_d")"
+assert_eq "标量 fs 被 role 覆盖"   "read-only" "$(jq -r '.fs'   <<<"$merged_d")"
+# 但其他默认字段不受影响
+assert_eq "未覆盖字段保留 (tier)" "async_agent" "$(jq -r '.tier' <<<"$merged_d")"
+
+# 场景 5：H1 修复后，最终 claude CLI 命令含 swarm-join.sh 禁用
+# 注：build_cli_command 输出经 printf %q 转义，括号星号有 \ 转义，
+# 所以这里只断言子串（命令名 + 冒号），不断言完整 Bash(...) 形式
+final_cli=$(build_cli_command "claude chat" "$merged_a")
+assert_contains "修复后最终 CLI 命令含 swarm-join.sh 禁用" "$final_cli" "swarm-join.sh:"
+assert_contains "修复后最终 CLI 命令含新增 docker 禁用" "$final_cli" "docker:"
+# 进一步用 eval 还原后断言（确认 shell 解析后的 argv 含正确字符串）
+eval "set -- $final_cli"
+final_args="$*"
+assert_contains "eval 后含 Bash(swarm-join.sh:*)" "$final_args" "Bash(swarm-join.sh:*)"
+assert_contains "eval 后含 Bash(docker:*)" "$final_args" "Bash(docker:*)"
+
+# ============================================================================
 # Test 5: 三家 CLI 的 build_cli_command 输出可被 eval 还原
 # ============================================================================
 
@@ -290,6 +363,31 @@ for profile in minimal web-dev full-stack; do
     invalid_cat=$(jq -r '[.roles[] | select(.category != null and (.category | IN("management","quality","core") | not))] | length' "$profile_file")
     assert_eq "profile ${profile}.json category 值合法" "0" "$invalid_cat"
 done
+
+# ============================================================================
+# Test 10: H2 回归 — compose 路径的 gate_result 应为 n/a
+# ============================================================================
+#
+# _compose_parent (msg-task-queue.sh:660) 不调用质量门，gate_result 应明示
+# 为 "n/a"，而不是误导性的 "pass"。supervisor.md 明确告诉 supervisor 看
+# <gate-result> 判断质量，写 "pass" 会让父任务被误判为通过质量门校验。
+#
+# 这是源码级断言，不需要真跑 compose。
+
+section "Test 10: H2 回归 — compose gate_result 必须为 n/a"
+
+queue_file="$SWARM_ROOT/scripts/lib/msg-task-queue.sh"
+# 提取 compose 块附近的 gate_result 行
+compose_gate_line=$(awk '/_compose_parent/,/_check_subtask_completion|^_check/' "$queue_file" 2>/dev/null \
+    | grep -m1 'gate_result:' || true)
+
+assert_contains "compose 块的 gate_result 已改为 n/a" "$compose_gate_line" 'gate_result: "n/a"'
+assert_not_contains "compose 块不再含 gate_result: \"pass\"" "$compose_gate_line" '"pass"'
+
+# cmd_complete_task 仍应是 "pass"（gate 实际跑过且通过才能走到这里）
+complete_gate_line=$(awk '/cmd_complete_task\(\)/,/^cmd_fail_task/' "$queue_file" 2>/dev/null \
+    | grep -m1 'gate_result:' || true)
+assert_contains "cmd_complete_task 仍是 gate_result: pass" "$complete_gate_line" 'gate_result: "pass"'
 
 # ============================================================================
 # 总结
