@@ -8,6 +8,7 @@
       "name": "frontend",
       "cli": "gemini --approval-mode yolo",
       "config": "core/frontend.md",
+      "category": "core",
       "alias": "fe,front,frontend,0",
       "title": "🎨 前端专家",
       "description": "React/Vue 前端开发专家"
@@ -16,6 +17,7 @@
       "name": "backend",
       "cli": "claude chat",
       "config": "core/backend.md",
+      "category": "core",
       "alias": "be,back,backend,1",
       "title": "⚙️ 后端专家",
       "description": "后端开发专家"
@@ -24,6 +26,7 @@
       "name": "database",
       "cli": "claude chat",
       "config": "core/database.md",
+      "category": "core",
       "alias": "db,database,2",
       "title": "🗄️ 数据库专家",
       "description": "数据库设计和优化专家"
@@ -32,6 +35,7 @@
       "name": "devops",
       "cli": "codex chat",
       "config": "core/devops.md",
+      "category": "core",
       "alias": "ops,devops,3",
       "title": "🚀 DevOps专家",
       "description": "CI/CD 和自动化专家"
@@ -40,6 +44,7 @@
       "name": "tester",
       "cli": "codex chat",
       "config": "quality/tester.md",
+      "category": "quality",
       "alias": "test,tester,4",
       "title": "🧪 测试专家",
       "description": "自动化测试专家"
@@ -48,6 +53,7 @@
       "name": "reviewer",
       "cli": "codex chat",
       "config": "quality/reviewer.md",
+      "category": "quality",
       "alias": "review,rv,reviewer,5",
       "title": "🔍 代码审查员",
       "description": "代码质量审查专家"

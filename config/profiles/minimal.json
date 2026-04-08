@@ -8,6 +8,7 @@
       "name": "frontend",
       "cli": "gemini --approval-mode yolo",
       "config": "core/frontend.md",
+      "category": "core",
       "alias": "fe,front,frontend,0",
       "title": "🎨 前端专家",
       "description": "React/Vue 前端开发专家，负责 UI 实现和用户体验"
@@ -16,6 +17,7 @@
       "name": "backend",
       "cli": "claude chat",
       "config": "core/backend.md",
+      "category": "core",
       "alias": "be,back,backend,1",
       "title": "⚙️ 后端专家",
       "description": "后端开发专家，负责 API 设计、业务逻辑和数据处理"
@@ -24,6 +26,7 @@
       "name": "reviewer",
       "cli": "codex chat",
       "config": "quality/reviewer.md",
+      "category": "quality",
       "alias": "review,rv,reviewer,2",
       "title": "🔍 代码审查员",
       "description": "代码质量审查专家，负责代码规范和最佳实践验证"

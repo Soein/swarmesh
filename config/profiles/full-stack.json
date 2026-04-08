@@ -10,7 +10,8 @@
       "config": "core/frontend.md",
       "alias": "fe,front,frontend,0",
       "title": "前端专家",
-      "description": "React/Vue 前端开发专家，负责 UI 实现和用户体验"
+      "description": "React/Vue 前端开发专家，负责 UI 实现和用户体验",
+      "category": "core"
     },
     {
       "name": "backend",
@@ -18,7 +19,8 @@
       "config": "core/backend.md",
       "alias": "be,back,backend,1",
       "title": "后端专家",
-      "description": "后端开发专家，负责 API 设计、业务逻辑和数据处理"
+      "description": "后端开发专家，负责 API 设计、业务逻辑和数据处理",
+      "category": "core"
     },
     {
       "name": "database",
@@ -26,7 +28,8 @@
       "config": "core/database.md",
       "alias": "db,database,2",
       "title": "数据库专家",
-      "description": "数据库设计和优化专家，负责数据架构和查询优化"
+      "description": "数据库设计和优化专家，负责数据架构和查询优化",
+      "category": "core"
     },
     {
       "name": "devops",
@@ -34,7 +37,8 @@
       "config": "core/devops.md",
       "alias": "ops,devops,3",
       "title": "DevOps专家",
-      "description": "CI/CD 和自动化专家，负责部署流水线和基础设施"
+      "description": "CI/CD 和自动化专家，负责部署流水线和基础设施",
+      "category": "core"
     },
     {
       "name": "tester",
@@ -42,7 +46,8 @@
       "config": "quality/tester.md",
       "alias": "test,tester,4",
       "title": "测试专家",
-      "description": "自动化测试专家，负责测试策略和质量保障"
+      "description": "自动化测试专家，负责测试策略和质量保障",
+      "category": "quality"
     },
     {
       "name": "security",
@@ -50,7 +55,8 @@
       "config": "quality/security.md",
       "alias": "sec,security,5",
       "title": "安全专家",
-      "description": "安全审计专家，负责安全扫描和漏洞防护"
+      "description": "安全审计专家，负责安全扫描和漏洞防护",
+      "category": "quality"
     },
     {
       "name": "performance",
@@ -58,7 +64,8 @@
       "config": "quality/performance.md",
       "alias": "perf,performance,6",
       "title": "性能专家",
-      "description": "性能优化专家，负责性能分析和调优"
+      "description": "性能优化专家，负责性能分析和调优",
+      "category": "quality"
     },
     {
       "name": "reviewer",
@@ -66,7 +73,8 @@
       "config": "quality/reviewer.md",
       "alias": "review,rv,reviewer,7",
       "title": "代码审查员",
-      "description": "代码质量审查专家，负责代码规范和最佳实践验证"
+      "description": "代码质量审查专家，负责代码规范和最佳实践验证",
+      "category": "quality"
     },
     {
       "name": "ui-designer",
@@ -74,7 +82,8 @@
       "config": "management/ui-designer.md",
       "alias": "ui,designer,8",
       "title": "UI设计专家",
-      "description": "UI 设计专家，负责视觉设计、交互设计和设计系统"
+      "description": "UI 设计专家，负责视觉设计、交互设计和设计系统",
+      "category": "management"
     },
     {
       "name": "architect",
@@ -82,7 +91,8 @@
       "config": "management/architect.md",
       "alias": "arch,architect,9",
       "title": "系统架构师",
-      "description": "系统架构师，负责架构设计、技术选型和技术指导"
+      "description": "系统架构师，负责架构设计、技术选型和技术指导",
+      "category": "management"
     },
     {
       "name": "auditor",
@@ -90,7 +100,8 @@
       "config": "management/auditor.md",
       "alias": "audit,auditor,10",
       "title": "审核专家",
-      "description": "审核专家，负责代码规范审核、标准符合性验证和发布检查"
+      "description": "审核专家，负责代码规范审核、标准符合性验证和发布检查",
+      "category": "management"
     },
     {
       "name": "prd",
@@ -98,7 +109,8 @@
       "config": "management/prd.md",
       "alias": "pm,prd,product,11",
       "title": "产品经理",
-      "description": "产品经理，负责需求分析、用户故事编写、优先级排序和需求澄清"
+      "description": "产品经理，负责需求分析、用户故事编写、优先级排序和需求澄清",
+      "category": "management"
     },
     {
       "name": "supervisor",
@@ -106,7 +118,8 @@
       "config": "management/supervisor.md",
       "alias": "sup,supervisor,12",
       "title": "编排者",
-      "description": "编排者，负责任务拆解、角色调度、进度监控和跨角色协调"
+      "description": "编排者，负责任务拆解、角色调度、进度监控和跨角色协调",
+      "category": "management"
     },
     {
       "name": "inspector",
@@ -114,7 +127,8 @@
       "config": "management/inspector.md",
       "alias": "insp,inspector,13",
       "title": "督查员",
-      "description": "督查员，负责任务验收、质量把关、返工决策和风险预警"
+      "description": "督查员，负责任务验收、质量把关、返工决策和风险预警",
+      "category": "management"
     }
   ],
   "config": {
@@ -135,9 +149,26 @@
       "需要流程监督和跨团队协调的团队项目"
     ],
     "team_composition": {
-      "core_dev": ["frontend", "backend", "database", "devops"],
-      "quality": ["tester", "security", "performance", "reviewer"],
-      "management": ["prd", "ui-designer", "architect", "auditor", "supervisor", "inspector"]
+      "core_dev": [
+        "frontend",
+        "backend",
+        "database",
+        "devops"
+      ],
+      "quality": [
+        "tester",
+        "security",
+        "performance",
+        "reviewer"
+      ],
+      "management": [
+        "prd",
+        "ui-designer",
+        "architect",
+        "auditor",
+        "supervisor",
+        "inspector"
+      ]
     }
   }
 }

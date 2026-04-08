@@ -577,7 +577,7 @@ NEED_SUP=$(( DEFAULT_SUPERVISOR_COUNT - HAS_SUPERVISOR ))
 if [[ "$NEED_SUP" -gt 0 ]]; then
     log_info "自动注入 ${NEED_SUP} 个 supervisor 角色（编排者，目标 ${DEFAULT_SUPERVISOR_COUNT} 个）"
     for ((s=0; s<NEED_SUP; s++)); do
-        SUPERVISOR_ENTRY='{"name":"supervisor","cli":"claude chat","config":"management/supervisor.md","alias":"sup,supervisor","title":"编排者","description":"蜂群编排者，负责任务拆解、角色调度和进度监控"}'
+        SUPERVISOR_ENTRY='{"name":"supervisor","cli":"claude chat","config":"management/supervisor.md","category":"management","alias":"sup,supervisor","title":"编排者","description":"蜂群编排者，负责任务拆解、角色调度和进度监控"}'
         ROLES_JSON=$(echo "$ROLES_JSON" | jq --argjson sup "$SUPERVISOR_ENTRY" '. + [$sup]')
     done
 fi
@@ -586,7 +586,7 @@ fi
 HAS_INSPECTOR=$(echo "$ROLES_JSON" | jq '[.[] | select(.name == "inspector")] | length')
 if [[ "$HAS_INSPECTOR" -eq 0 ]]; then
     log_info "自动注入 inspector 角色（督查员）"
-    INSPECTOR_ENTRY='{"name":"inspector","cli":"claude chat","config":"management/inspector.md","alias":"insp,inspector","title":"督查员","description":"督查员，负责质量门配置、任务验收和产出质量把关"}'
+    INSPECTOR_ENTRY='{"name":"inspector","cli":"claude chat","config":"management/inspector.md","category":"management","alias":"insp,inspector","title":"督查员","description":"督查员，负责质量门配置、任务验收和产出质量把关"}'
     ROLES_JSON=$(echo "$ROLES_JSON" | jq --argjson insp "$INSPECTOR_ENTRY" '. + [$insp]')
 fi
 
@@ -634,14 +634,15 @@ log_info "创建 panes 并启动 AI CLI..."
 declare -a PANE_MAPPINGS=()
 
 # 预提取所有角色信息到数组（单次 jq 调用代替循环内 N*7 次 jq）
-declare -a ALL_NAMES ALL_CLIS ALL_CONFIGS ALL_ALIASES ALL_DESCS
-while IFS=$'\t' read -r _name _cli _config _alias _desc; do
+declare -a ALL_NAMES ALL_CLIS ALL_CONFIGS ALL_ALIASES ALL_DESCS ALL_CATEGORIES
+while IFS=$'\t' read -r _name _cli _config _alias _desc _category; do
     ALL_NAMES+=("$_name")
     ALL_CLIS+=("$_cli")
     ALL_CONFIGS+=("$_config")
     ALL_ALIASES+=("$_alias")
     ALL_DESCS+=("$_desc")
-done < <(echo "$ROLES_JSON" | jq -r '.[] | [.name, .cli, .config, (.alias // ""), (.description // "")] | @tsv')
+    ALL_CATEGORIES+=("$_category")
+done < <(echo "$ROLES_JSON" | jq -r '.[] | [.name, .cli, .config, (.alias // ""), (.description // ""), (.category // "")] | @tsv')
 
 for ((i=0; i<ROLES_COUNT; i++)); do
     # 计算窗口和 pane 位置
@@ -653,8 +654,14 @@ for ((i=0; i<ROLES_COUNT; i++)); do
     CLI="${ALL_CLIS[$i]}"
     CONFIG="${ALL_CONFIGS[$i]}"
     ALIAS="${ALL_ALIASES[$i]}"
+    CATEGORY="${ALL_CATEGORIES[$i]}"
 
-    log_info "  [$i] $ROLE → $CLI (window: $WINDOW_IDX, pane: $PANE_IN_WINDOW)"
+    # category 缺失时从 config 路径兜底推断（向后兼容老 profile）
+    if [[ -z "$CATEGORY" ]]; then
+        CATEGORY=$(infer_category_from_config "$CONFIG")
+    fi
+
+    log_info "  [$i] $ROLE → $CLI (window: $WINDOW_IDX, pane: $PANE_IN_WINDOW, category: $CATEGORY)"
 
     if [[ $PANE_IN_WINDOW -eq 0 ]]; then
         # 第一个 pane 已在窗口创建时存在
@@ -683,10 +690,12 @@ for ((i=0; i<ROLES_COUNT; i++)); do
     fi
     log_info "      Worktree: $ROLE_WORKTREE (branch: $ROLE_BRANCH)"
 
-    # 在角色的 worktree 目录启动 CLI（导出 RUNTIME_DIR 和 SWARM_SESSION 确保 pane 内脚本找到正确路径）
-    _send_keys_enter "$PANE_TARGET" \
-        "cd \"$ROLE_WORKTREE\" && export SWARM_ROLE=\"$ROLE\" && export SWARM_INSTANCE=\"$INSTANCE\" && export RUNTIME_DIR=\"$RUNTIME_DIR\" && export SWARM_SESSION=\"$SESSION_NAME\" && $CLI" \
-        "$CLI"
+    # 在角色的 worktree 目录启动 CLI（权限层会根据 category 拼接 allowedTools/disallowedTools）
+    # Codex+management 组合默认被阻断，必要时 export SWARM_ALLOW_CODEX_MGMT=1 后重试
+    if ! launch_cli_in_pane "$PANE_TARGET" "$ROLE" "$INSTANCE" "$ROLE_WORKTREE" "$CLI" "$CATEGORY" "$PROFILE_JSON"; then
+        log_error "启动失败: role=$ROLE category=$CATEGORY cli=$CLI"
+        exit 1
+    fi
 
     # 等待 CLI 启动
     sleep "$CLI_STARTUP_WAIT"
@@ -728,13 +737,20 @@ for ((i=0; i<ROLES_COUNT; i++)); do
     WATCHER_PID=$(start_pane_watcher "$INSTANCE" "$LOG_FILE" "$PANE_TARGET" "$ROLE_WORKTREE")
     log_info "      Watcher PID: $WATCHER_PID"
 
-    # 记录 pane 映射（含 watcher_pid）
+    # 读取 launch_cli_in_pane 写入的权限快照（用于 state.json 记录）
+    PERMS_SNAPSHOT="{}"
+    if [[ -f "$RUNTIME_DIR/perms/${INSTANCE}.json" ]]; then
+        PERMS_SNAPSHOT=$(cat "$RUNTIME_DIR/perms/${INSTANCE}.json")
+    fi
+
+    # 记录 pane 映射（含 watcher_pid、category、permissions）
     PANE_MAPPINGS+=("$(jq -n \
         --arg role "$ROLE" --arg instance "$INSTANCE" --arg pane "$PANE_TARGET" \
         --arg cli "$CLI" --arg config "$CONFIG" --arg alias "$ALIAS" \
         --arg log "$LOG_FILE" --argjson watcher_pid "$WATCHER_PID" \
         --arg worktree "$ROLE_WORKTREE" --arg branch "$ROLE_BRANCH" \
-        '{role:$role,instance:$instance,pane:$pane,cli:$cli,config:$config,alias:$alias,log:$log,watcher_pid:$watcher_pid,worktree:$worktree,branch:$branch}'
+        --arg category "$CATEGORY" --argjson permissions "$PERMS_SNAPSHOT" \
+        '{role:$role,instance:$instance,pane:$pane,cli:$cli,config:$config,alias:$alias,log:$log,watcher_pid:$watcher_pid,worktree:$worktree,branch:$branch,category:$category,permissions:$permissions}'
     )")
 done
 
