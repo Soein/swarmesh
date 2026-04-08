@@ -256,41 +256,39 @@ assert_contains "claude 已含 --permission-mode 时有 warn" \
     "$user_claude_cmd" "已含 --permission-mode"
 
 # ============================================================================
-# Test 8: 未知 CLI pass-through
+# Test 8: 未识别 CLI 必须 die（严格模式）
 # ============================================================================
 
-section "Test 8: 未知 CLI pass-through"
+section "Test 8: 未识别 CLI 必须 die"
 
-unknown_cmd=$(build_cli_command "aider --model gpt-4" "$core_perms" 2>&1)
-assert_contains "未知 CLI 有 warn 日志" "$unknown_cmd" "未知 CLI 类型"
-assert_contains "未知 CLI 原样返回" "$unknown_cmd" "aider --model gpt-4"
-
-# ============================================================================
-# Test 9: SWARM_PERMISSIONS=off 紧急回滚
-# ============================================================================
-
-section "Test 9: SWARM_PERMISSIONS=off 紧急回滚出口"
-
-off_cmd=$(SWARM_PERMISSIONS=off build_cli_command "claude chat" "$mgmt_perms" 2>&1)
-assert_contains "SWARM_PERMISSIONS=off 有 warn 日志" "$off_cmd" "SWARM_PERMISSIONS=off"
-assert_contains "SWARM_PERMISSIONS=off 原样返回" "$off_cmd" "claude chat"
-assert_not_contains "SWARM_PERMISSIONS=off 无 --allowedTools" \
-    "$(echo "$off_cmd" | tail -1)" "--allowedTools"
+# 用子 shell 包裹：die 会 exit 1，子 shell 退出不会影响主测试进程
+unknown_output=$(bash -c '
+    set +e
+    source "'"$SCRIPT_DIR"'/swarm-lib.sh" 2>/dev/null
+    build_cli_command "aider --model gpt-4" "{}" 2>&1
+    echo "EXITCODE=$?"
+' || true)
+assert_contains "未识别 CLI die 错误信息" "$unknown_output" "未识别 CLI 类型"
+assert_not_contains "未识别 CLI 不会原样输出" "$unknown_output" "aider --model gpt-4
+EXITCODE=0"
 
 # ============================================================================
-# Test 10: Profile 兼容性（三个内置 profile 都能被正确解析）
+# Test 9: Profile schema 严格模式（所有 role 必须带 category）
 # ============================================================================
 
-section "Test 10: Profile JSON 兼容性"
+section "Test 9: Profile JSON schema 严格模式"
 
 for profile in minimal web-dev full-stack; do
     profile_file="$SWARM_ROOT/config/profiles/${profile}.json"
     if [[ ! -f "$profile_file" ]]; then
         continue
     fi
-    # 检查所有 role 都有 category（新字段）
+    # 所有 role 必须显式带 category，且值必须是 management/quality/core
     missing_cat=$(jq -r '[.roles[] | select(.category == null)] | length' "$profile_file")
     assert_eq "profile ${profile}.json 所有 role 含 category" "0" "$missing_cat"
+
+    invalid_cat=$(jq -r '[.roles[] | select(.category != null and (.category | IN("management","quality","core") | not))] | length' "$profile_file")
+    assert_eq "profile ${profile}.json category 值合法" "0" "$invalid_cat"
 done
 
 # ============================================================================

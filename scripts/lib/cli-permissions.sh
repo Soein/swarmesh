@@ -305,17 +305,11 @@ _build_codex_cmd() {
 # 输出:
 #   完整的 CLI 命令字符串（到 stdout），含权限 flag
 #
-# 未识别 CLI 时，原样返回并打印 warn 日志（pass-through）。
+# 失败:
+#   - 未识别 CLI 类型 → die (仅支持 claude / codex / gemini)
 #
 build_cli_command() {
     local cli_str="$1" perms="$2"
-
-    # 紧急回滚出口: SWARM_PERMISSIONS=off 完全跳过权限拼接
-    if [[ "${SWARM_PERMISSIONS:-on}" == "off" ]]; then
-        log_warn "cli-permissions: SWARM_PERMISSIONS=off, 跳过权限层 (原样返回)"
-        printf '%s' "$cli_str"
-        return 0
-    fi
 
     local kind
     kind=$(_detect_cli_kind "$cli_str")
@@ -325,8 +319,7 @@ build_cli_command() {
         codex)   _build_codex_cmd  "$cli_str" "$perms" ;;
         gemini)  _build_gemini_cmd "$cli_str" "$perms" ;;
         unknown)
-            log_warn "cli-permissions: 未知 CLI 类型 '$cli_str'，跳过权限层 (pass-through)"
-            printf '%s' "$cli_str"
+            die "cli-permissions: 未识别 CLI 类型 '$cli_str' (仅支持 claude / codex / gemini)"
             ;;
     esac
 }

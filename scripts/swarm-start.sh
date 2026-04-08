@@ -656,10 +656,14 @@ for ((i=0; i<ROLES_COUNT; i++)); do
     ALIAS="${ALL_ALIASES[$i]}"
     CATEGORY="${ALL_CATEGORIES[$i]}"
 
-    # category 缺失时从 config 路径兜底推断（向后兼容老 profile）
+    # profile 必须显式声明 category（management / quality / core）
     if [[ -z "$CATEGORY" ]]; then
-        CATEGORY=$(infer_category_from_config "$CONFIG")
+        die "角色 $ROLE (config: $CONFIG) 未声明 category 字段，profile 必须显式指定 management / quality / core"
     fi
+    case "$CATEGORY" in
+        management|quality|core) ;;
+        *) die "角色 $ROLE 的 category='$CATEGORY' 非法，必须是 management / quality / core" ;;
+    esac
 
     log_info "  [$i] $ROLE → $CLI (window: $WINDOW_IDX, pane: $PANE_IN_WINDOW, category: $CATEGORY)"
 

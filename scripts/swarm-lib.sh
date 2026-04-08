@@ -414,7 +414,7 @@ generate_instance_resume_summary() {
                     [[ $completed_count -le ${RESUME_SUMMARY_MAX_TASKS:-10} ]] || continue
                     local title result
                     title=$(jq -r '.title // .id // "unknown"' "$task_file" 2>/dev/null)
-                    result=$(jq -r '.result // "" | if length > 100 then .[:100] + "..." else . end' "$task_file" 2>/dev/null)
+                    result=$(jq -r '.notification.result // "" | if length > 100 then .[:100] + "..." else . end' "$task_file" 2>/dev/null)
                     echo "- [完成] $title"
                     [[ -n "$result" ]] && echo "  结果: $result"
                 fi

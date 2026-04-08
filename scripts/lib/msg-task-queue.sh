@@ -626,7 +626,7 @@ _compose_parent() {
         local tmp="$parent_file.tmp"
         jq '.split_status = "composing"' "$parent_file" > "$tmp" && mv "$tmp" "$parent_file"
 
-        # 收集所有子任务的 title + result
+        # 收集所有子任务的 title + result（从 .notification.result 读）
         local composed_result=""
         while IFS= read -r sub_id; do
             [[ -z "$sub_id" ]] && continue
@@ -634,17 +634,32 @@ _compose_parent() {
             [[ -f "$sub_file" ]] || continue
             local sub_title sub_result
             sub_title=$(jq -r '.title // ""' "$sub_file" 2>/dev/null)
-            sub_result=$(jq -r '.result // ""' "$sub_file" 2>/dev/null)
+            sub_result=$(jq -r '.notification.result // ""' "$sub_file" 2>/dev/null)
             composed_result+="[$sub_id] $sub_title: $sub_result"$'\n'
         done < <(jq -r '.subtasks // [] | .[]' "$parent_file" 2>/dev/null)
 
         # 父任务 processing/ → completed/（先写 tmp 再 mv，确保原子性）
+        # 仅写 .notification（不写 .result），summary 标识为子任务归一
         local completed_at
         completed_at=$(get_timestamp)
         mkdir -p "$TASKS_DIR/completed"
         local compose_tmp="$TASKS_DIR/completed/${parent_id}.json.tmp"
         jq --arg result "$composed_result" --arg at "$completed_at" \
-            '.status = "completed" | .result = $result | .completed_at = $at | .split_status = "composed"
+            '.status = "completed"
+             | .completed_at = $at
+             | .split_status = "composed"
+             | .notification = {
+                 version: "1",
+                 task_id: .id,
+                 status: "completed",
+                 group_id: (.group_id // null),
+                 from: (.claimed_by // "system"),
+                 title: .title,
+                 summary: "子任务归一完成",
+                 result: $result,
+                 gate_result: "pass",
+                 completed_at: $at
+               }
              | .flow_log = ((.flow_log // []) + [{
                  ts: $at, action: "composed",
                  from_status: "processing", to_status: "completed",
@@ -1119,11 +1134,11 @@ cmd_complete_task() {
 
     mkdir -p "$TASKS_DIR/completed"
     local ctmp="$TASKS_DIR/processing/${task_id}.json.tmp"
-    # 同时写入 .result（向后兼容的纯字符串）和 .notification（结构化元数据，
-    # 版本化以便后续演进；gate_result 先占位为 "pass"，Gate 失败时根本走不到这里）
+    # 任务完成只写 .notification 结构化元数据（版本化以便后续演进），
+    # 所有下游消费者从 .notification.result 读取产出文本。
+    # gate_result 先占位为 "pass"，Gate 失败时根本走不到这里。
     if jq --arg result "$result" --arg at "$completed_at" --arg actor "$my_instance" \
         '.status = "completed"
-         | .result = $result
          | .completed_at = $at
          | .notification = {
              version: "1",
@@ -1731,7 +1746,7 @@ cmd_group_report() {
         local t_title t_claimed t_result
         t_title=$(jq -r '.title' "$task_file")
         t_claimed=$(jq -r '.claimed_by // ""' "$task_file")
-        t_result=$(jq -r '.result // ""' "$task_file")
+        t_result=$(jq -r '.notification.result // ""' "$task_file")
 
         # 计算单个任务耗时
         local task_duration=""
@@ -2623,7 +2638,7 @@ cmd_group_status() {
         t_type=$(jq -r '.type' "$task_file")
         t_title=$(jq -r '.title' "$task_file")
         t_claimed=$(jq -r '.claimed_by // ""' "$task_file")
-        t_result=$(jq -r '.result // ""' "$task_file")
+        t_result=$(jq -r '.notification.result // ""' "$task_file")
         t_depends=$(jq -r '(.depends_on // []) | if length > 0 then join(", ") else "" end' "$task_file")
 
         echo "  [$icon] $tid ($task_status)"
