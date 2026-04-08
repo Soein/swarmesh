@@ -43,11 +43,13 @@ CONFIG_PATH=""
 ALIAS=""
 TARGET_WINDOW=""
 INITIAL_TASK=""
+CATEGORY=""  # 可选: management/quality/core；未传则从 --config 路径推断
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --cli)      CLI_CMD="$2"; shift 2 ;;
         --config)   CONFIG_PATH="$2"; shift 2 ;;
+        --category) CATEGORY="$2"; shift 2 ;;
         --alias)    ALIAS="$2"; shift 2 ;;
         --window)   TARGET_WINDOW="$2"; shift 2 ;;
         --task)     INITIAL_TASK="$2"; shift 2 ;;
@@ -65,6 +67,8 @@ swarm-join.sh - 动态注册新角色加入蜂群
   --config <path>   角色配置文件路径（相对于 config/roles/）
 
 可选参数:
+  --category <c>    权限分类 (management/quality/core)，
+                    未传则从 --config 路径前缀推断
   --alias <aliases> 角色别名，逗号分隔
   --window <name>   加入的窗口名（默认自动选择）
   --task <task>     加入后立即派发的任务（可选）
@@ -235,10 +239,18 @@ else
 fi
 log_info "Worktree: $ROLE_WORKTREE (branch: $ROLE_BRANCH)"
 
-# 在角色的 worktree 目录启动 CLI（导出 RUNTIME_DIR 和 SWARM_SESSION 确保 pane 内脚本找到正确路径）
-_send_keys_enter "$PANE_TARGET" \
-    "cd \"$ROLE_WORKTREE\" && export SWARM_ROLE=\"$ROLE\" && export SWARM_INSTANCE=\"$INSTANCE\" && export RUNTIME_DIR=\"$RUNTIME_DIR\" && export SWARM_SESSION=\"$SESSION_NAME\" && $CLI_CMD" \
-    "$CLI_CMD"
+# category 缺失时从 config 路径兜底推断
+if [[ -z "$CATEGORY" ]]; then
+    CATEGORY=$(infer_category_from_config "$CONFIG_PATH")
+fi
+log_info "Category: $CATEGORY"
+
+# 在角色的 worktree 目录启动 CLI（权限层根据 category 拼接 allowedTools/disallowedTools）
+# Codex+management 组合默认被阻断，必要时 export SWARM_ALLOW_CODEX_MGMT=1 后重试
+# swarm-join 没有 profile JSON 上下文，权限完全来自 config/permission-defaults.json
+if ! launch_cli_in_pane "$PANE_TARGET" "$ROLE" "$INSTANCE" "$ROLE_WORKTREE" "$CLI_CMD" "$CATEGORY" ""; then
+    die "启动失败: role=$ROLE category=$CATEGORY cli=$CLI_CMD"
+fi
 
 sleep "$CLI_STARTUP_WAIT"
 
@@ -283,6 +295,12 @@ log_info "Watcher PID: $WATCHER_PID"
 
 log_info "更新 state.json..."
 
+# 读取 launch_cli_in_pane 写入的权限快照
+PERMS_SNAPSHOT="{}"
+if [[ -f "$RUNTIME_DIR/perms/${INSTANCE}.json" ]]; then
+    PERMS_SNAPSHOT=$(cat "$RUNTIME_DIR/perms/${INSTANCE}.json")
+fi
+
 NEW_PANE_JSON=$(jq -n \
     --arg role "$ROLE" \
     --arg instance "$INSTANCE" \
@@ -294,6 +312,8 @@ NEW_PANE_JSON=$(jq -n \
     --argjson watcher_pid "$WATCHER_PID" \
     --arg worktree "$ROLE_WORKTREE" \
     --arg branch "$ROLE_BRANCH" \
+    --arg category "$CATEGORY" \
+    --argjson permissions "$PERMS_SNAPSHOT" \
     '{
         role: $role,
         instance: $instance,
@@ -304,7 +324,9 @@ NEW_PANE_JSON=$(jq -n \
         log: $log,
         watcher_pid: $watcher_pid,
         worktree: $worktree,
-        branch: $branch
+        branch: $branch,
+        category: $category,
+        permissions: $permissions
     }')
 
 # 原子更新（flock 加锁，避免并发 join/leave 竞态）
