@@ -141,6 +141,256 @@ _validate_task_contract() {
     echo "$normalized"
 }
 
+_validate_synthesize_phase_payload() {
+    local result_json="$1"
+    local normalized
+    normalized=$(jq -ce '
+        if type != "object" then
+            error("synthesize 结果必须是 JSON 对象")
+        else
+            .
+        end
+        | .spec = (.spec // null)
+        | .orchestration_plan = (.orchestration_plan // null)
+        | if (.spec | type) == "object" then . else error("缺少 spec 对象") end
+        | if ((.spec.summary // "") | type) == "string" and (.spec.summary // "") != "" then
+              .
+          else
+              error("spec.summary 不能为空")
+          end
+        | if (.orchestration_plan | type) == "object" then . else error("缺少 orchestration_plan 对象") end
+        | .orchestration_plan.steps = (.orchestration_plan.steps // [])
+        | if ((.orchestration_plan.steps | type) == "array"
+              and (.orchestration_plan.steps | length) > 0) then
+              .
+          else
+              error("orchestration_plan.steps 必须是非空数组")
+          end
+        | .orchestration_plan.playbook_id = (.orchestration_plan.playbook_id // "")
+        | if ((.orchestration_plan.playbook_id | type) == "string") then . else error("orchestration_plan.playbook_id 必须是字符串") end
+        | .orchestration_plan.strategy_hint = (.orchestration_plan.strategy_hint // "")
+        | if ((.orchestration_plan.strategy_hint | type) == "string") then . else error("orchestration_plan.strategy_hint 必须是字符串") end
+        | .orchestration_plan.risk_checks = (.orchestration_plan.risk_checks // [])
+        | if ((.orchestration_plan.risk_checks | type) == "array") then . else error("orchestration_plan.risk_checks 必须是数组") end
+        | .orchestration_plan.integration_focus = (.orchestration_plan.integration_focus // [])
+        | if ((.orchestration_plan.integration_focus | type) == "array") then . else error("orchestration_plan.integration_focus 必须是数组") end
+        | .orchestration_plan.steps |= map(
+            if type != "object" then
+                error("orchestration_plan.steps 元素必须是对象")
+            else
+                .
+            end
+            | if ((.id // "") | type) == "string" and (.id // "") != "" then
+                  .
+              else
+                  error("orchestration_plan.steps[].id 不能为空")
+              end
+            | if ((.title // "") | type) == "string" and (.title // "") != "" then
+                  .
+              else
+                  error("orchestration_plan.steps[].title 不能为空")
+              end
+            | if ((.required_capability // "") | type) == "string" and (.required_capability // "") != "" then
+                  .
+              else
+                  error("orchestration_plan.steps[].required_capability 不能为空")
+              end
+            | .depends_on = (.depends_on // [])
+            | if ((.depends_on | type) == "array") then
+                  .
+              else
+                  error("orchestration_plan.steps[].depends_on 必须是数组")
+              end
+            | .resolution = (.resolution // null)
+            | if .resolution == null then
+                  .
+              elif (.resolution | type) != "object" then
+                  error("orchestration_plan.steps[].resolution 必须是对象")
+              else
+                  .resolution.suggested_role = (.resolution.suggested_role // "")
+                  | if ((.resolution.suggested_role | type) == "string") then . else error("orchestration_plan.steps[].resolution.suggested_role 必须是字符串") end
+                  | .resolution.suggested_dispatch_mode = (.resolution.suggested_dispatch_mode // "")
+                  | if ((.resolution.suggested_dispatch_mode | type) == "string"
+                        and ((.resolution.suggested_dispatch_mode == "")
+                             or (.resolution.suggested_dispatch_mode | IN("existing_role", "fallback_role", "new_role", "unresolved")))) then
+                        .
+                    else
+                        error("orchestration_plan.steps[].resolution.suggested_dispatch_mode 非法")
+                    end
+                  | .resolution.suggested_join_command = (.resolution.suggested_join_command // "")
+                  | if ((.resolution.suggested_join_command | type) == "string") then . else error("orchestration_plan.steps[].resolution.suggested_join_command 必须是字符串") end
+                  | .resolution.final_role = (.resolution.final_role // "")
+                  | if ((.resolution.final_role | type) == "string") then . else error("orchestration_plan.steps[].resolution.final_role 必须是字符串") end
+                  | .resolution.final_dispatch_mode = (.resolution.final_dispatch_mode // "")
+                  | if ((.resolution.final_dispatch_mode | type) == "string"
+                        and ((.resolution.final_dispatch_mode == "")
+                             or (.resolution.final_dispatch_mode | IN("existing_role", "fallback_role", "new_role", "unresolved")))) then
+                        .
+                    else
+                        error("orchestration_plan.steps[].resolution.final_dispatch_mode 非法")
+                    end
+                  | .resolution.source = (.resolution.source // "")
+                  | if ((.resolution.source | type) == "string"
+                        and ((.resolution.source == "")
+                             or (.resolution.source | IN("auto", "manual_override")))) then
+                        .
+                    else
+                        error("orchestration_plan.steps[].resolution.source 非法")
+                    end
+                  | .resolution.reason = (.resolution.reason // "")
+                  | if ((.resolution.reason | type) == "string") then . else error("orchestration_plan.steps[].resolution.reason 必须是字符串") end
+                  | .resolution.risk = (.resolution.risk // "")
+                  | if ((.resolution.risk | type) == "string") then . else error("orchestration_plan.steps[].resolution.risk 必须是字符串") end
+              end
+        )
+    ' 2>/dev/null <<<"$result_json") || return 1
+
+    echo "$normalized"
+}
+
+_task_has_synthesize_plan() {
+    local task_file="$1"
+    jq -e '
+        (.phase_payloads.synthesize.orchestration_plan.steps // [])
+        | type == "array" and length > 0
+    ' "$task_file" >/dev/null 2>&1
+}
+
+_validate_implement_phase_payload() {
+    local task_file="$1"
+    local result_json="$2"
+    local synth_payload normalized
+
+    synth_payload=$(jq -c '.phase_payloads.synthesize' "$task_file" 2>/dev/null) || return 1
+    [[ -n "$synth_payload" && "$synth_payload" != "null" ]] || return 1
+
+    normalized=$(jq -ce --argjson synth "$synth_payload" '
+        ($synth.orchestration_plan.steps // []) as $steps
+        | ($steps | map(.id)) as $allowed_ids
+        | ($steps | map({key: .id, value: .required_capability}) | from_entries) as $step_capabilities
+        | if type != "object" then
+            error("implement 结果必须是 JSON 对象")
+          else
+            .
+          end
+        | .executed_plan_step_ids = (.executed_plan_step_ids // [])
+        | .published_tasks = (.published_tasks // [])
+        | .dispatch_receipts = (.dispatch_receipts // [])
+        | (.published_tasks) as $published_task_ids
+        | if ((.executed_plan_step_ids | type) == "array"
+              and (.executed_plan_step_ids | length) > 0) then
+              .
+          else
+              error("executed_plan_step_ids 必须是非空数组")
+          end
+        | if ((.published_tasks | type) == "array"
+              and (.published_tasks | length) > 0) then
+              .
+          else
+              error("published_tasks 必须是非空数组")
+          end
+        | if ((.dispatch_receipts | type) == "array"
+              and (.dispatch_receipts | length) > 0) then
+              .
+          else
+              error("dispatch_receipts 必须是非空数组")
+          end
+        | if ([.executed_plan_step_ids[] | select(($allowed_ids | index(.)) == null)] | length) == 0 then
+              .
+          else
+              error("executed_plan_step_ids 包含未知计划步骤")
+          end
+        | if ((.executed_plan_step_ids | unique | length) == (.executed_plan_step_ids | length)) then
+              .
+          else
+              error("executed_plan_step_ids 存在重复步骤")
+          end
+        | .dispatch_receipts |= map(
+            if type != "object" then
+                error("dispatch_receipts 元素必须是对象")
+            else
+                .
+            end
+            | if ((.step_id // "") | type) == "string" and (.step_id // "") != "" then
+                  .
+              else
+                  error("dispatch_receipts[].step_id 不能为空")
+              end
+            | if ((.required_capability // "") | type) == "string" and (.required_capability // "") != "" then
+                  .
+              else
+                  error("dispatch_receipts[].required_capability 不能为空")
+              end
+            | if ((.suggested_role // "") | type) == "string" then . else error("dispatch_receipts[].suggested_role 必须是字符串") end
+            | if ((.suggested_dispatch_mode // "") | type) == "string"
+                  and (.suggested_dispatch_mode | IN("existing_role", "fallback_role", "new_role", "unresolved")) then
+                  .
+              else
+                  error("dispatch_receipts[].suggested_dispatch_mode 非法")
+              end
+            | if ((.final_role // "") | type) == "string" and (.final_role // "") != "" then
+                  .
+              else
+                  error("dispatch_receipts[].final_role 不能为空")
+              end
+            | if ((.final_dispatch_mode // "") | type) == "string"
+                  and (.final_dispatch_mode | IN("existing_role", "fallback_role", "new_role")) then
+                  .
+              else
+                  error("dispatch_receipts[].final_dispatch_mode 非法")
+              end
+            | if ((.resolution_source // "") | type) == "string"
+                  and (.resolution_source | IN("auto", "manual_override")) then
+                  .
+              else
+                  error("dispatch_receipts[].resolution_source 非法")
+              end
+            | .resolution_reason = (.resolution_reason // "")
+            | if ((.resolution_reason | type) == "string") then . else error("dispatch_receipts[].resolution_reason 必须是字符串") end
+            | .resolution_risk = (.resolution_risk // "")
+            | if ((.resolution_risk | type) == "string") then . else error("dispatch_receipts[].resolution_risk 必须是字符串") end
+            | if (.resolution_source != "manual_override"
+                  or (.resolution_reason != "" and .resolution_risk != "")) then
+                  .
+              else
+                  error("dispatch_receipts[].manual_override 必须填写 resolution_reason 和 resolution_risk")
+              end
+            | if ((.published_task_id // "") | type) == "string" and (.published_task_id // "") != "" then
+                  .
+              else
+                  error("dispatch_receipts[].published_task_id 不能为空")
+              end
+        )
+        | if ([.dispatch_receipts[] | . as $receipt | select(($allowed_ids | index($receipt.step_id)) == null)] | length) == 0 then
+              .
+          else
+              error("dispatch_receipts 包含未知计划步骤")
+          end
+        | if ([.dispatch_receipts[] | . as $receipt | select($step_capabilities[$receipt.step_id] != $receipt.required_capability)] | length) == 0 then
+              .
+          else
+              error("dispatch_receipts.required_capability 与计划步骤不一致")
+          end
+        | if ([.dispatch_receipts[] | . as $receipt | select(($published_task_ids | index($receipt.published_task_id)) == null)] | length) == 0 then
+              .
+          else
+              error("dispatch_receipts 包含未知 published_task_id")
+          end
+        | if ((.dispatch_receipts | map(.step_id) | unique | length) == (.dispatch_receipts | length)) then
+              .
+          else
+              error("dispatch_receipts 存在重复 step_id")
+          end
+        | if ((.dispatch_receipts | map(.step_id) | sort) == (.executed_plan_step_ids | sort)) then
+              .
+          else
+              error("dispatch_receipts 必须覆盖 executed_plan_step_ids")
+          end
+    ' 2>/dev/null <<<"$result_json") || return 1
+
+    echo "$normalized"
+}
+
 _notify_phase_handoff() {
     local task_file="$1"
     local completed_phase="$2"
@@ -1000,6 +1250,7 @@ cmd_publish() {
             split_status: null,
             depth: 0,
             phase_results: {},
+            phase_payloads: {},
             phase_history: [],
             flow_log: [{
                 ts: $created_at, action: "published",
@@ -1283,6 +1534,20 @@ cmd_complete_task() {
         || die "complete-task: 任务 schema_version=$schema_version，当前内核只接受 V$(_task_schema_version)"
     [[ -n "$phase" && "$phase" != "done" ]] || die "complete-task: 非法 phase=$phase"
 
+    local phase_payload_json="null"
+    case "$phase" in
+        synthesize)
+            phase_payload_json=$(_validate_synthesize_phase_payload "$result") \
+                || die "complete-task: synthesize 结果必须包含 spec.summary，以及带 required_capability 的 orchestration_plan.steps"
+            ;;
+        implement)
+            if _task_has_synthesize_plan "$task_file"; then
+                phase_payload_json=$(_validate_implement_phase_payload "$task_file" "$result") \
+                    || die "complete-task: implement 结果必须包含 executed_plan_step_ids、published_tasks、dispatch_receipts；manual_override 必须附带原因和风险，并引用 synthesize.orchestration_plan.steps"
+            fi
+            ;;
+    esac
+
     if [[ "$phase" == "verify" ]]; then
         if ! _run_quality_gate "$task_id" "$my_instance"; then
             return 0
@@ -1298,6 +1563,7 @@ cmd_complete_task() {
         mkdir -p "$TASKS_DIR/completed"
         local ctmp="$TASKS_DIR/processing/${task_id}.json.tmp"
         if jq --arg result "$result" --arg at "$completed_at" --arg actor "$my_instance" --arg phase "$phase" \
+            --argjson phase_payload "$phase_payload_json" \
             '.status = "completed"
              | .phase = "done"
              | .phase_owner = null
@@ -1305,6 +1571,8 @@ cmd_complete_task() {
              | .claimed_by = $actor
              | .completed_at = $at
              | .result = $result
+             | .phase_payloads = (.phase_payloads // {})
+             | if $phase_payload == null then . else .phase_payloads[$phase] = $phase_payload end
              | .phase_results[$phase] = $result
              | .phase_history = ((.phase_history // []) + [{
                  phase: $phase, owner: $actor, completed_at: $at, result: $result
@@ -1372,6 +1640,7 @@ cmd_complete_task() {
         --arg current_phase "$phase" \
         --arg next_phase "$next_phase" \
         --arg next_owner "$next_owner" \
+        --argjson phase_payload "$phase_payload_json" \
         '.status = "pending"
          | .phase = $next_phase
          | .phase_owner = $next_owner
@@ -1380,6 +1649,8 @@ cmd_complete_task() {
          | .claimed_at = null
          | .blocked_reason = null
          | .resource_blocked_by = null
+         | .phase_payloads = (.phase_payloads // {})
+         | if $phase_payload == null then . else .phase_payloads[$current_phase] = $phase_payload end
          | .phase_results[$current_phase] = $result
          | .phase_history = ((.phase_history // []) + [{
              phase: $current_phase, owner: $actor, completed_at: $at, result: $result

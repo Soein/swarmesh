@@ -149,6 +149,18 @@ swarm-msg.sh claim <task-id>
 # Complete task (triggers quality gate)
 swarm-msg.sh complete-task <task-id> "Implemented and tested"
 
+# For orchestrate tasks, synthesize must return capability-based structured JSON:
+swarm-msg.sh complete-task <task-id> '{"spec":{"summary":"Turn research into executable spec"},"orchestration_plan":{"steps":[{"id":"backend-api","title":"Implement backend API","required_capability":"backend_dev","resolution":{"suggested_role":"backend","suggested_dispatch_mode":"existing_role","suggested_join_command":""}}]}}'
+
+# If implement inherits that synthesize plan, it must return execution receipts before integrate:
+swarm-msg.sh complete-task <task-id> '{"summary":"Plan dispatched","executed_plan_step_ids":["backend-api"],"published_tasks":["task-101"],"dispatch_receipts":[{"step_id":"backend-api","required_capability":"backend_dev","suggested_role":"backend","suggested_dispatch_mode":"existing_role","final_role":"backend","final_dispatch_mode":"existing_role","resolution_source":"auto","resolution_reason":"","resolution_risk":"","published_task_id":"task-101"}]}'
+
+# Capability / playbook helpers
+bash scripts/swarm-insights.sh validate-capabilities
+bash scripts/swarm-insights.sh resolve-capability backend_dev
+bash scripts/swarm-insights.sh suggest-playbook <group-id>
+bash scripts/swarm-insights.sh approve-playbook runtime/playbook-candidates/<file>.json --as parallel-feature-v2
+
 # View task group status
 swarm-msg.sh group-status <group-id>
 
@@ -207,6 +219,17 @@ swarm-msg.sh story-view <group-id>
 #### Quality Gates
 
 When a worker calls `complete-task`, verification commands (build/test/lint) run automatically. If checks fail, the task stays in processing state — the worker must fix issues and resubmit.
+
+For multi-phase `orchestrate` tasks, runtime now also enforces planning artifacts:
+
+1. `synthesize` must submit structured JSON containing `spec.summary` and capability-based `orchestration_plan.steps[].required_capability`.
+2. If `implement` inherits that synthesize plan, it must submit `executed_plan_step_ids`, `published_tasks`, and `dispatch_receipts` before it can advance to `integrate`.
+
+Formal internal priors live under `config/orchestration/playbooks/`, but they are capability-based, not role- or instance-based. Runtime assignment is resolved later against the current online team and optional `swarm-join.sh` expansion.
+
+`dispatch_receipts` are the authoritative execution trace: they record whether a step followed the default suggestion (`resolution_source=auto`) or was manually overridden by supervisor (`resolution_source=manual_override`).
+
+Candidate priors are generated into `runtime/playbook-candidates/` and do not take effect automatically.
 
 Verification command priority (low → high):
 
@@ -622,6 +645,18 @@ swarm-msg.sh claim <task-id>
 # 完成任务（触发质量门检查）
 swarm-msg.sh complete-task <task-id> "已实现并测试通过"
 
+# 对 orchestrate 任务，synthesize 必须提交 capability-based 结构化 JSON：
+swarm-msg.sh complete-task <task-id> '{"spec":{"summary":"把调研转成可执行 spec"},"orchestration_plan":{"steps":[{"id":"backend-api","title":"实现后端 API","required_capability":"backend_dev","resolution":{"suggested_role":"backend","suggested_dispatch_mode":"existing_role","suggested_join_command":""}}]}}'
+
+# 如果 implement 承接了这份 synthesize 计划，进入 integrate 前必须回报执行回执：
+swarm-msg.sh complete-task <task-id> '{"summary":"已按计划派发","executed_plan_step_ids":["backend-api"],"published_tasks":["task-101"],"dispatch_receipts":[{"step_id":"backend-api","required_capability":"backend_dev","suggested_role":"backend","suggested_dispatch_mode":"existing_role","final_role":"backend","final_dispatch_mode":"existing_role","resolution_source":"auto","resolution_reason":"","resolution_risk":"","published_task_id":"task-101"}]}'
+
+# capability / playbook 辅助命令
+bash scripts/swarm-insights.sh validate-capabilities
+bash scripts/swarm-insights.sh resolve-capability backend_dev
+bash scripts/swarm-insights.sh suggest-playbook <group-id>
+bash scripts/swarm-insights.sh approve-playbook runtime/playbook-candidates/<file>.json --as parallel-feature-v2
+
 # 查看任务组状态
 swarm-msg.sh group-status <group-id>
 
@@ -680,6 +715,17 @@ swarm-msg.sh story-view <group-id>
 #### 质量门
 
 工蜂 `complete-task` 时自动执行验证命令（build/test/lint），检查失败则任务保持 processing，工蜂需修复后重新提交。
+
+对多阶段 `orchestrate` 任务，runtime 还会强制检查计划产物：
+
+1. `synthesize` 必须提交包含 `spec.summary` 和 capability-based `orchestration_plan.steps[].required_capability` 的结构化 JSON。
+2. 如果 `implement` 承接了这份 synthesize 计划，那么进入 `integrate` 前必须提交 `executed_plan_step_ids`、`published_tasks` 和 `dispatch_receipts`。
+
+正式内部先验位于 `config/orchestration/playbooks/`，并且只绑定 capability，不绑定 role 或 instance。真正的角色落位要结合当前在线团队和 `swarm-join.sh` 动态扩容能力，在当次 `orchestration_plan` 中解析。
+
+`dispatch_receipts` 是实现阶段的权威执行回执：它会记录某个 step 是按默认建议派发（`resolution_source=auto`），还是由 supervisor 人工改派（`resolution_source=manual_override`）。
+
+自动总结出的候选先验只写入 `runtime/playbook-candidates/`，不会自动生效；需要人工通过 `approve-playbook` 显式入库。
 
 验证命令三层优先级（低→高）：
 1. **运行时**: `runtime/project-info.json` 的 `verify_commands`（inspector 通过 `set-verify` 配置）

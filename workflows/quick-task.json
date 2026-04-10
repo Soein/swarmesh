@@ -23,13 +23,14 @@
           },
           "expected_outputs": [
             "事实清单",
-            "可执行 spec",
+            "结构化 spec + orchestration_plan",
             "执行结果",
             "最终验收结论"
           ],
           "acceptance_criteria": [
             "research 只产出事实",
-            "synthesize 必须给出可执行 spec",
+            "synthesize 必须输出 capability-based 结构化 spec + orchestration_plan",
+            "implement 如承接 synthesize 计划，完成时必须回报 executed_plan_step_ids + published_tasks + dispatch_receipts",
             "implement 完成后必须先进入 integrate",
             "verify 通过后才算完成"
           ],

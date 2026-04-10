@@ -128,6 +128,116 @@ swarm-msg.sh send inspector "请分析项目技术栈并配置质量门。
 - 详细的任务描述（`--description`），包含具体要求、接口约定、验收标准
 - 任务间的依赖关系（`--depends`）
 
+### 第 4.5 步: 先产出结构化计划，再进入 implement
+
+如果当前任务走的是 `research -> synthesize -> implement` 链路，那么 `synthesize` 阶段**必须**先把事实转成结构化产物，再允许推进：
+
+```json
+{
+  "spec": {
+    "summary": "一句话说清实现目标",
+    "deliverables": ["子任务清单", "依赖关系", "验收重点"]
+  },
+  "orchestration_plan": {
+    "playbook_id": "parallel-feature",
+    "strategy_hint": "parallel-by-module",
+    "risk_checks": ["接口契约是否前置明确"],
+    "integration_focus": ["前后端接口一致性"],
+    "steps": [
+      {
+        "id": "backend-api",
+        "title": "实现注册 API",
+        "required_capability": "backend_dev",
+        "depends_on": [],
+        "resolution": {
+          "suggested_role": "backend",
+          "suggested_dispatch_mode": "existing_role",
+          "suggested_join_command": ""
+        }
+      },
+      {
+        "id": "frontend-page",
+        "title": "实现注册页面",
+        "required_capability": "frontend_dev",
+        "depends_on": ["backend-api"],
+        "resolution": {
+          "suggested_role": "frontend",
+          "suggested_dispatch_mode": "existing_role",
+          "suggested_join_command": ""
+        }
+      }
+    ]
+  }
+}
+```
+
+- `spec` 是你对调研结果的提炼，不是原文转发
+- `orchestration_plan.steps` 是后续 implement 真正要执行的计划项
+- 正式先验只绑定 `required_capability`，不绑定具体 role / instance
+- `resolution.suggested_*` 是系统默认建议，不是不可变的最终指派
+- 你如果后续决定 override，不要回头改写正式先验；在 implement 阶段用 `dispatch_receipts` 留下最终决策
+- 没有这份结构化计划，任务不会进入 `implement`
+
+生成 capability-based 计划前，先用内部工具看当前能力怎么落位：
+
+```bash
+scripts/swarm-insights.sh resolve-capability backend_dev
+scripts/swarm-insights.sh resolve-capability security_audit
+```
+
+解析顺序固定为：
+1. 先找 capability 的 `preferred_roles`
+2. 找不到再看 `fallback_roles`
+3. 还没有且 capability 允许 `auto_join`，才考虑 `swarm-join.sh`
+4. 如果仍然缺能力，就把该 step 的 `resolution.suggested_dispatch_mode` 标成 `unresolved`，并在 spec 里明确写风险
+
+override 规则：
+- 默认先按 capability 建议走
+- 你可以自己 override，不需要先问 human
+- 只有涉及需求范围、产品行为、优先级或明显额外成本时，才升级给 human
+- 任何 override 都必须在 implement 的 `dispatch_receipts` 里留下原因和风险
+
+如果当前 `implement` 阶段承接了这份计划，那么完成时也必须给出结构化执行回执：
+
+```json
+{
+  "summary": "已按计划完成派发",
+  "executed_plan_step_ids": ["backend-api", "frontend-page"],
+  "published_tasks": ["task-101", "task-102"],
+  "dispatch_receipts": [
+    {
+      "step_id": "backend-api",
+      "required_capability": "backend_dev",
+      "suggested_role": "backend",
+      "suggested_dispatch_mode": "existing_role",
+      "final_role": "backend",
+      "final_dispatch_mode": "existing_role",
+      "resolution_source": "auto",
+      "resolution_reason": "",
+      "resolution_risk": "",
+      "published_task_id": "task-101"
+    },
+    {
+      "step_id": "frontend-page",
+      "required_capability": "frontend_dev",
+      "suggested_role": "frontend",
+      "suggested_dispatch_mode": "existing_role",
+      "final_role": "architect",
+      "final_dispatch_mode": "existing_role",
+      "resolution_source": "manual_override",
+      "resolution_reason": "architect 刚完成相关调研，继续实现更快",
+      "resolution_risk": "需要 verify 重点检查前端交互与接口联调",
+      "published_task_id": "task-102"
+    }
+  ]
+}
+```
+
+- `executed_plan_step_ids` 必须引用前面 `orchestration_plan.steps[].id`
+- `published_tasks` 用来说明你实际派发了哪些队列任务
+- `dispatch_receipts` 是必填，它记录每个 step 最终落到了谁、是否 override、为什么 override
+- 没有执行回执，任务不会进入 `integrate`
+
 ### 第 5 步: 创建任务组并派发
 
 ```bash
@@ -259,6 +369,8 @@ user 字段为 undefined。
 - 工蜂之间**无法看到彼此的对话和产出**，它只有 task description 能读
 - 偷懒转派把"理解"推给了工蜂，实际是你自己没读懂
 - supervisor 的核心价值就是"读懂调研 → 生成可执行 spec"，不做这一步等于没做编排
+- 从现在开始，这个“可执行 spec”必须落成 `spec + orchestration_plan` 的结构化结果，而不是一句自然语言
+- 从现在开始，正式 playbook 里只写 capability，不写 `backend-2` 这种临时实例；实例级指派只能出现在你本次生成的 `orchestration_plan` 里
 - 你收到工蜂调研结果后，必须先在脑子里过一遍："我理解了吗？关键文件/行号是什么？具体要改什么？"然后才写 publish 命令
 
 ## 任务描述编写规范

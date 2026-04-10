@@ -1,0 +1,36 @@
+{
+  "id": "analysis-audit",
+  "name": "分析与审计",
+  "when_to_use": [
+    "输出以事实、审计或评估结论为主",
+    "不以代码实现为主要目标"
+  ],
+  "strategy_hint": "analysis-first",
+  "plan_template": [
+    {
+      "id": "collect-facts",
+      "title": "整理事实与上下文",
+      "required_capability": "requirement_analysis",
+      "depends_on": []
+    },
+    {
+      "id": "run-audit",
+      "title": "执行审计或评估",
+      "required_capability": "security_audit",
+      "depends_on": ["collect-facts"]
+    },
+    {
+      "id": "verify-findings",
+      "title": "复核结论与风险",
+      "required_capability": "verification",
+      "depends_on": ["run-audit"]
+    }
+  ],
+  "risk_checks": [
+    "事实与结论是否混淆",
+    "审计结论是否可执行"
+  ],
+  "integration_focus": [
+    "结论摘要、证据链与风险清单"
+  ]
+}

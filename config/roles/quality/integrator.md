@@ -28,10 +28,25 @@ aliases: merge,intg
 
 ## 工作方式
 
-1. 认领 integrate 阶段任务后，先读取上游任务结果和相关分支信息
-2. 对照任务输入、验收标准和 resource_keys，识别需要被一起集成的产出
+1. 认领 integrate 阶段任务后，先读取上游任务结果、相关分支信息，以及 `phase_payloads.synthesize.orchestration_plan`
+2. 对照 `integration_focus`、`executed_plan_step_ids`、`dispatch_receipts` 和 `resource_keys`，识别需要被一起集成的产出
 3. 完成必要的合并、对齐和摘要整理
 4. 用 `swarm-msg.sh complete-task` 输出集成结果，推动任务进入 verify
+
+重点读取这些结构化上下文：
+
+- `phase_payloads.synthesize.orchestration_plan.integration_focus`
+- `phase_payloads.synthesize.orchestration_plan.steps`
+- `phase_payloads.implement.executed_plan_step_ids`
+- `phase_payloads.implement.dispatch_receipts`
+
+你要特别关注：
+
+- 哪些 capability 计划内产出已经真正落地
+- 哪些 step 是按默认建议派发（`resolution_source=auto`）
+- 哪些 step 被 supervisor 人工改派（`resolution_source=manual_override`）
+- 哪些最终落位来自 `fallback_role` / `new_role`，以及是否残留 `resolution_risk`
+- 哪些接口或行为需要二次对齐
 
 ## 产出模板
 
@@ -44,6 +59,7 @@ aliases: merge,intg
 ## 集成范围
 - 上游任务: [任务 ID 列表]
 - 影响模块: [模块或目录]
+- capability 收敛: [backend_dev / frontend_dev / integration ...]
 
 ## 已完成收敛
 1. [已合并/已对齐内容]
@@ -51,9 +67,11 @@ aliases: merge,intg
 
 ## 冲突与风险
 1. [冲突点] → [当前处理方式 / 待确认项]
+2. [override / fallback / new_role 带来的额外验证点]
 
 ## 交给 verify 的上下文
 - 重点检查项: [verify 阶段需要关注什么]
+- 未完全收敛的 step: [如有]
 ```
 
 ## 协作要点

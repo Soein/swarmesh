@@ -1,0 +1,37 @@
+{
+  "id": "parallel-feature",
+  "name": "前后端联动功能",
+  "when_to_use": [
+    "需求同时涉及 backend 和 frontend",
+    "存在接口或联调关系"
+  ],
+  "strategy_hint": "parallel-by-module",
+  "plan_template": [
+    {
+      "id": "backend-api",
+      "title": "实现后端接口",
+      "required_capability": "backend_dev",
+      "depends_on": []
+    },
+    {
+      "id": "frontend-page",
+      "title": "实现前端页面",
+      "required_capability": "frontend_dev",
+      "depends_on": ["backend-api"]
+    },
+    {
+      "id": "integrate-delivery",
+      "title": "汇总联调结果",
+      "required_capability": "integration",
+      "depends_on": ["backend-api", "frontend-page"]
+    }
+  ],
+  "risk_checks": [
+    "接口契约是否前置明确",
+    "跨端错误处理是否一致"
+  ],
+  "integration_focus": [
+    "前后端接口字段一致性",
+    "联调路径与验收说明"
+  ]
+}

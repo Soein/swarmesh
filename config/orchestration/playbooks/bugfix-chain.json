@@ -1,0 +1,36 @@
+{
+  "id": "bugfix-chain",
+  "name": "缺陷修复链路",
+  "when_to_use": [
+    "先需要查明问题，再做修复",
+    "修复后需要复核风险"
+  ],
+  "strategy_hint": "serial-by-dependency",
+  "plan_template": [
+    {
+      "id": "analyze-bug",
+      "title": "定位缺陷根因",
+      "required_capability": "architecture_design",
+      "depends_on": []
+    },
+    {
+      "id": "fix-bug",
+      "title": "实施修复",
+      "required_capability": "backend_dev",
+      "depends_on": ["analyze-bug"]
+    },
+    {
+      "id": "review-fix",
+      "title": "复核修复结果",
+      "required_capability": "code_review",
+      "depends_on": ["fix-bug"]
+    }
+  ],
+  "risk_checks": [
+    "根因是否和观察现象一致",
+    "修复是否引入新的回归点"
+  ],
+  "integration_focus": [
+    "修复说明、验证结果与风险是否收敛"
+  ]
+}

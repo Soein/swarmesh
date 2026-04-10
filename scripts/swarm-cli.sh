@@ -376,13 +376,14 @@ cmd_task() {
             inputs: [$content],
             expected_outputs: [
                 "事实清单",
-                "可执行 spec",
+                "结构化 spec + orchestration_plan",
                 "实现与集成摘要",
                 "最终验收结论"
             ],
             acceptance_criteria: [
                 "research 只能产出事实",
-                "synthesize 必须转成可执行 spec",
+                "synthesize 必须输出 capability-based 结构化 spec + orchestration_plan",
+                "implement 如承接 synthesize 计划，完成时必须回报 executed_plan_step_ids + published_tasks + dispatch_receipts",
                 "implement 完成后必须进入 integrate",
                 "integrate 完成后才能进入 verify",
                 "只有整体任务完成后才允许向 human 汇报"

@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "capabilities": {
+    "requirement_analysis": {
+      "preferred_roles": ["prd"],
+      "fallback_roles": ["supervisor"],
+      "auto_join": {
+        "enabled": true,
+        "role": "prd",
+        "config": "management/prd.md",
+        "default_cli": "claude chat"
+      }
+    },
+    "architecture_design": {
+      "preferred_roles": ["architect"],
+      "fallback_roles": ["supervisor"],
+      "auto_join": {
+        "enabled": true,
+        "role": "architect",
+        "config": "management/architect.md",
+        "default_cli": "claude chat"
+      }
+    },
+    "backend_dev": {
+      "preferred_roles": ["backend"],
+      "fallback_roles": ["architect"],
+      "auto_join": {
+        "enabled": true,
+        "role": "backend",
+        "config": "core/backend.md",
+        "default_cli": "claude chat"
+      }
+    },
+    "frontend_dev": {
+      "preferred_roles": ["frontend"],
+      "fallback_roles": ["ui-designer"],
+      "auto_join": {
+        "enabled": true,
+        "role": "frontend",
+        "config": "core/frontend.md",
+        "default_cli": "gemini --approval-mode yolo"
+      }
+    },
+    "database_design": {
+      "preferred_roles": ["database"],
+      "fallback_roles": ["architect"],
+      "auto_join": {
+        "enabled": true,
+        "role": "database",
+        "config": "core/database.md",
+        "default_cli": "claude chat"
+      }
+    },
+    "devops_ops": {
+      "preferred_roles": ["devops"],
+      "fallback_roles": ["backend"],
+      "auto_join": {
+        "enabled": true,
+        "role": "devops",
+        "config": "core/devops.md",
+        "default_cli": "codex chat"
+      }
+    },
+    "testing": {
+      "preferred_roles": ["tester"],
+      "fallback_roles": ["reviewer"],
+      "auto_join": {
+        "enabled": true,
+        "role": "tester",
+        "config": "quality/tester.md",
+        "default_cli": "codex chat"
+      }
+    },
+    "code_review": {
+      "preferred_roles": ["reviewer"],
+      "fallback_roles": ["auditor"],
+      "auto_join": {
+        "enabled": true,
+        "role": "reviewer",
+        "config": "quality/reviewer.md",
+        "default_cli": "codex chat"
+      }
+    },
+    "integration": {
+      "preferred_roles": ["integrator"],
+      "fallback_roles": [],
+      "auto_join": {
+        "enabled": false
+      }
+    },
+    "security_audit": {
+      "preferred_roles": ["security"],
+      "fallback_roles": ["reviewer", "auditor"],
+      "auto_join": {
+        "enabled": true,
+        "role": "security",
+        "config": "quality/security.md",
+        "default_cli": "claude chat"
+      }
+    },
+    "verification": {
+      "preferred_roles": ["inspector"],
+      "fallback_roles": ["reviewer"],
+      "auto_join": {
+        "enabled": false
+      }
+    }
+  }
+}

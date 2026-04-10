@@ -1,0 +1,36 @@
+{
+  "id": "refactor-delivery",
+  "name": "重构交付",
+  "when_to_use": [
+    "主要目标是结构调整或代码整理",
+    "需要重构说明和回归校验"
+  ],
+  "strategy_hint": "staged-refactor",
+  "plan_template": [
+    {
+      "id": "design-refactor",
+      "title": "明确重构边界",
+      "required_capability": "architecture_design",
+      "depends_on": []
+    },
+    {
+      "id": "execute-refactor",
+      "title": "执行重构",
+      "required_capability": "backend_dev",
+      "depends_on": ["design-refactor"]
+    },
+    {
+      "id": "verify-refactor",
+      "title": "验证重构回归",
+      "required_capability": "testing",
+      "depends_on": ["execute-refactor"]
+    }
+  ],
+  "risk_checks": [
+    "边界是否收紧，避免顺手扩需求",
+    "验证覆盖是否足够支撑重构"
+  ],
+  "integration_focus": [
+    "重构说明、行为兼容性与验证结果"
+  ]
+}

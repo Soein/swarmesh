@@ -1,0 +1,23 @@
+{
+  "id": "single-module-change",
+  "name": "单模块小改动",
+  "when_to_use": [
+    "只涉及单一模块或目录",
+    "没有明显跨角色依赖"
+  ],
+  "strategy_hint": "single-track",
+  "plan_template": [
+    {
+      "id": "single-change",
+      "title": "在单一模块内完成变更",
+      "required_capability": "backend_dev",
+      "depends_on": []
+    }
+  ],
+  "risk_checks": [
+    "确认变更范围没有外溢到其他模块"
+  ],
+  "integration_focus": [
+    "单模块输出说明与验证结果是否完整"
+  ]
+}
