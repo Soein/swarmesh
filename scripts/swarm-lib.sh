@@ -105,6 +105,7 @@ _swarm_save_env_config() {
     while IFS= read -r var; do
         [[ -n "${!var+set}" ]] && _SWARM_ENV_SNAPSHOT+=("${var}=${!var}")
     done < <(grep -oE '\$\{[A-Z_]+:=' "$defaults" | sed 's/\${//;s/:=//')
+    return 0
 }
 declare -a _SWARM_ENV_SNAPSHOT=()
 _swarm_save_env_config
@@ -171,6 +172,19 @@ _file_mtime() {
 # 获取文件大小（macOS/Linux 兼容）
 _file_size() {
     stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null || echo "0"
+}
+
+_sha256_file() {
+    local file="$1"
+    [[ -f "$file" ]] || return 1
+    shasum -a 256 "$file" 2>/dev/null | awk '{print $1}' \
+        || sha256sum "$file" 2>/dev/null | awk '{print $1}'
+}
+
+_sha256_string() {
+    local input="$1"
+    printf '%s' "$input" | shasum -a 256 2>/dev/null | awk '{print $1}' \
+        || printf '%s' "$input" | sha256sum 2>/dev/null | awk '{print $1}'
 }
 
 # 检查命令是否存在
@@ -1121,11 +1135,11 @@ ${team_info:-（暂无其他成员）}
 | swarm-msg.sh complete-task <id> "result" | 完成任务并反馈 |
 | swarm-msg.sh group-status [group-id] | 查看任务组进度 |
 
-任务组示例（带依赖 + 指派）:
+任务组示例（带依赖 + V2 contract）:
   G=\$(swarm-msg.sh create-group "用户注册系统")
-  T1=\$(swarm-msg.sh publish develop "实现 API" -g \$G --assign backend)
-  T2=\$(swarm-msg.sh publish develop "设计数据库" -g \$G --assign database)
-  T3=\$(swarm-msg.sh publish review "审核代码" -g \$G --assign reviewer --depends \$T1,\$T2)
+  T1=\$(swarm-msg.sh publish develop "实现 API" -g \$G --contract '{"phase":"implement","phase_assignments":{"research":"backend","synthesize":"backend","implement":"backend","integrate":"integrator","verify":"reviewer"},"inputs":["实现 API"],"expected_outputs":["代码变更","验证结果"],"acceptance_criteria":["verify 通过"],"impact_scope":"write","execution_mode":"exclusive","resource_keys":["repo:backend/api"],"handoff_format":"markdown"}')
+  T2=\$(swarm-msg.sh publish develop "设计数据库" -g \$G --contract '{"phase":"implement","phase_assignments":{"research":"database","synthesize":"database","implement":"database","integrate":"integrator","verify":"reviewer"},"inputs":["设计数据库"],"expected_outputs":["Schema","验证结果"],"acceptance_criteria":["verify 通过"],"impact_scope":"write","execution_mode":"exclusive","resource_keys":["repo:database/schema"],"handoff_format":"markdown"}')
+  T3=\$(swarm-msg.sh publish review "审核代码" -g \$G --depends \$T1,\$T2 --contract '{"phase":"verify","phase_assignments":{"research":"reviewer","synthesize":"reviewer","implement":"reviewer","integrate":"integrator","verify":"reviewer"},"inputs":["审核 API 与数据库变更"],"expected_outputs":["审查结论"],"acceptance_criteria":["结论可执行"],"impact_scope":"read_only","execution_mode":"parallel","resource_keys":[],"handoff_format":"markdown"}')
 
 ### 行为准则
 1. 当任务涉及其他角色的职责时，主动用 swarm-msg.sh send 联系对方

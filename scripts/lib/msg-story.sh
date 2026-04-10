@@ -86,7 +86,7 @@ _story_set_prd() {
 # 向 Story 追加子任务
 # 参数: $1=group_id, $2=task_id, $3=title, $4=type, $5=assigned_to, $6=branch
 _story_add_task() {
-    local group_id="$1" task_id="$2" title="$3" type="${4:-}" assigned_to="${5:-}" branch="${6:-}"
+    local group_id="$1" task_id="$2" title="$3" type="${4:-}" assigned_to="${5:-}" branch="${6:-}" phase="${7:-}"
     local now
     now=$(get_timestamp)
 
@@ -101,15 +101,16 @@ _story_add_task() {
             --arg type "$type" \
             --arg assigned_to "$assigned_to" \
             --arg branch "$branch" \
+            --arg phase "$phase" \
             --arg status "pending" \
-            '{id:$id, title:$title, type:$type, assigned_to:$assigned_to, branch:$branch, status:$status, result:null}')" \
+            '{id:$id, title:$title, type:$type, assigned_to:$assigned_to, branch:$branch, phase:$phase, status:$status, result:null}')" \
         --arg msg "$timeline_msg"
 }
 
 # 更新 Story 中的子任务状态
-# 参数: $1=task_id, $2=status(processing/completed), $3=info(可选)
+# 参数: $1=task_id, $2=status(processing/completed), $3=info(可选), $4=phase(可选)
 _story_update_task() {
-    local task_id="$1" new_status="$2" info="${3:-}"
+    local task_id="$1" new_status="$2" info="${3:-}" phase="${4:-}"
 
     # 查找任务所属 group_id
     local group_id=""
@@ -124,12 +125,15 @@ _story_update_task() {
     now=$(get_timestamp)
 
     _story_update "$group_id" \
-        '(.tasks[] | select(.id == $tid)) |= (.status = $s | .result = (if $r != "" then $r else .result end))
+        '(.tasks[] | select(.id == $tid)) |= (.status = $s
+          | .phase = (if $p != "" then $p else .phase end)
+          | .result = (if $r != "" then $r else .result end))
          | .timeline += [$msg]' \
         --arg tid "$task_id" \
         --arg s "$new_status" \
         --arg r "$info" \
-        --arg msg "$now $task_id $new_status"
+        --arg p "$phase" \
+        --arg msg "$now $task_id $new_status${phase:+ [$phase]}"
 }
 
 # 向 Story 追加验收记录

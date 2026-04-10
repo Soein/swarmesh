@@ -1,6 +1,6 @@
 {
   "name": "全栈开发团队",
-  "description": "包含全部 14 个角色的完整配置 - 覆盖需求、开发、质量、管理全流程",
+  "description": "包含全部 15 个角色的完整配置 - 覆盖需求、开发、质量、管理全流程",
   "version": "1.0.0",
   "created": "2026-02-12",
   "roles": [
@@ -74,6 +74,15 @@
       "alias": "review,rv,reviewer,7",
       "title": "代码审查员",
       "description": "代码质量审查专家，负责代码规范和最佳实践验证",
+      "category": "quality"
+    },
+    {
+      "name": "integrator",
+      "cli": "codex chat",
+      "config": "quality/integrator.md",
+      "alias": "merge,intg,integrator,14",
+      "title": "集成员",
+      "description": "后置集成专家，负责多角色结果收敛、冲突整理和集成摘要输出",
       "category": "quality"
     },
     {
@@ -159,7 +168,8 @@
         "tester",
         "security",
         "performance",
-        "reviewer"
+        "reviewer",
+        "integrator"
       ],
       "management": [
         "prd",

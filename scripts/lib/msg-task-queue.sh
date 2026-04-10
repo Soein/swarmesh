@@ -17,6 +17,7 @@ _MSG_TASK_QUEUE_LOADED=1
 # 路由缓存变量
 _ROUTING_CACHE=""
 _ROUTING_CACHE_MTIME=0
+TASK_SCHEMA_VERSION=2
 
 # 加载 cli-routing.json 缓存（基于 mtime，文件不变不重新解析）
 _load_routing_cache() {
@@ -83,6 +84,99 @@ _get_routing_score() {
 # =============================================================================
 # 任务队列内部工具函数
 # =============================================================================
+
+_task_schema_version() {
+    echo "$TASK_SCHEMA_VERSION"
+}
+
+_next_phase_after_completion() {
+    case "$1" in
+        research)   echo "synthesize" ;;
+        synthesize) echo "implement" ;;
+        implement)  echo "integrate" ;;
+        integrate)  echo "verify" ;;
+        verify)     echo "done" ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+_validate_task_contract() {
+    local contract_json="$1"
+    local normalized
+    normalized=$(jq -ce '
+        if type != "object" then
+            error("任务契约必须是 JSON 对象")
+        else
+            .
+        end
+        | .phase_assignments = (.phase_assignments // {})
+        | .inputs = (.inputs // [])
+        | .expected_outputs = (.expected_outputs // [])
+        | .acceptance_criteria = (.acceptance_criteria // [])
+        | .resource_keys = (.resource_keys // [])
+        | if (.phase | IN("research", "synthesize", "implement", "integrate", "verify")) then . else error("phase 非法") end
+        | if (.impact_scope | IN("read_only", "write")) then . else error("impact_scope 非法") end
+        | if (.execution_mode | IN("parallel", "exclusive")) then . else error("execution_mode 非法") end
+        | if ((.handoff_format | type) == "string" and (.handoff_format != "")) then . else error("handoff_format 不能为空") end
+        | if ((.inputs | type) == "array" and (.inputs | length) > 0) then . else error("inputs 必须是非空数组") end
+        | if ((.expected_outputs | type) == "array" and (.expected_outputs | length) > 0) then . else error("expected_outputs 必须是非空数组") end
+        | if ((.acceptance_criteria | type) == "array" and (.acceptance_criteria | length) > 0) then . else error("acceptance_criteria 必须是非空数组") end
+        | if ((.resource_keys | type) == "array") then . else error("resource_keys 必须是数组") end
+        | if ((.phase_assignments | type) == "object"
+              and (.phase_assignments.research // "") != ""
+              and (.phase_assignments.synthesize // "") != ""
+              and (.phase_assignments.implement // "") != ""
+              and (.phase_assignments.integrate // "") != ""
+              and (.phase_assignments.verify // "") != "") then
+              .
+          else
+              error("phase_assignments 必须完整声明五个阶段负责人")
+          end
+        | .phase_owner = (.phase_assignments[.phase] // "")
+        | if .phase_owner != "" then . else error("当前 phase 缺少 phase_owner") end
+    ' 2>/dev/null <<<"$contract_json") || return 1
+
+    echo "$normalized"
+}
+
+_notify_phase_handoff() {
+    local task_file="$1"
+    local completed_phase="$2"
+    local result="$3"
+    [[ -f "$task_file" ]] || return 0
+
+    local task_id phase phase_owner title handoff_format description
+    task_id=$(jq -r '.id' "$task_file")
+    phase=$(jq -r '.phase' "$task_file")
+    phase_owner=$(jq -r '.phase_owner // ""' "$task_file")
+    title=$(jq -r '.title' "$task_file")
+    handoff_format=$(jq -r '.handoff_format // "markdown"' "$task_file")
+    description=$(jq -r '.description // ""' "$task_file")
+    [[ -n "$phase_owner" ]] || return 0
+
+    local notify_msg="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    notify_msg+=$'\n'"[阶段流转] $title"
+    notify_msg+=$'\n'"任务ID: $task_id"
+    notify_msg+=$'\n'"已完成阶段: $completed_phase"
+    notify_msg+=$'\n'"下一阶段: $phase"
+    notify_msg+=$'\n'"负责人: $phase_owner"
+    notify_msg+=$'\n'"交付格式: $handoff_format"
+    [[ -n "$description" ]] && notify_msg+=$'\n'"描述: $description"
+    notify_msg+=$'\n'$'\n'"上阶段产出:"
+    notify_msg+=$'\n'"$result"
+    notify_msg+=$'\n'$'\n'"完成后执行: swarm-msg.sh complete-task $task_id \"阶段结果\""
+    notify_msg+=$'\n'"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    _unified_notify "$phase_owner" "$notify_msg" "task.phase_handoff"
+}
+
+_task_should_notify_on_completion() {
+    local task_file="$1"
+    jq -e '(.phase // "") == "done" and ((.group_id // "") == "")' \
+        "$task_file" >/dev/null 2>&1
+}
 
 # 自动认领下一个任务（工蜂完成任务后自动拉取）
 # 扫描 pending/，找本角色能接的任务，按优先级认领
@@ -194,6 +288,7 @@ _auto_claim_next() {
     local tmp_file="$TASKS_DIR/processing/$next_id.json.tmp"
     jq --arg inst "$my_instance" --arg at "$claimed_at" \
         '.status = "processing" | .claimed_by = $inst | .claimed_at = $at
+         | .blocked_reason = null | .resource_blocked_by = null
          | .flow_log = ((.flow_log // []) + [{
              ts: $at, action: "auto_claimed",
              from_status: "pending", to_status: "processing",
@@ -207,7 +302,9 @@ _auto_claim_next() {
     # 通知发布者
     local from_id from_pane
     from_id=$(jq -r '.from' "$TASKS_DIR/processing/$next_id.json")
-    _unified_notify "$from_id" "[自动认领] $my_instance 已认领任务: $next_id" "task.auto_claimed"
+    if [[ "$from_id" != "human" ]]; then
+        _unified_notify "$from_id" "[自动认领] $my_instance 已认领任务: $next_id" "task.auto_claimed"
+    fi
 
     # 输出任务详情，CLI 看到后直接开始工作
     echo ""
@@ -330,6 +427,7 @@ _check_and_unblock() {
             local tmp_unblock="$TASKS_DIR/blocked/${tid}.json.tmp"
             if jq --arg at "$unblock_ts" \
                 '.blocked = false | .status = "pending"
+                 | .blocked_reason = null | .resource_blocked_by = null
                  | .flow_log = ((.flow_log // []) + [{
                      ts: $at, action: "unblocked",
                      from_status: "blocked", to_status: "pending",
@@ -744,20 +842,27 @@ cmd_publish() {
     local title="$2"
     shift 2
 
-    local description="" priority="normal" group_id="" depends_on="" assign_to="" explicit_branch="" verify=""
+    local description="" priority="normal" group_id="" depends_on="" explicit_branch="" verify="" contract=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --description|-d) description="$2"; shift 2 ;;
             --priority|-p)    priority="$2"; shift 2 ;;
             --group|-g)       group_id="$2"; shift 2 ;;
             --depends)        depends_on="$2"; shift 2 ;;
-            --assign|-a)      assign_to="$2"; shift 2 ;;
             --branch|-b)      explicit_branch="$2"; shift 2 ;;
             --verify|-V)      verify="$2"; shift 2 ;;
+            --contract|-C)    contract="$2"; shift 2 ;;
+            --assign|-a)      die "publish: --assign 已废弃，请通过 --contract.phase_assignments 指定阶段负责人" ;;
             -*) die "publish: 未知选项 '$1' (使用 swarm-msg.sh help 查看帮助)" ;;
             *)  die "publish: 多余参数 '$1'" ;;
         esac
     done
+
+    [[ -n "$contract" ]] || die "publish: 缺少 --contract（必须提供 V2 任务契约）"
+
+    local normalized_contract
+    normalized_contract=$(_validate_task_contract "$contract") \
+        || die "publish: --contract 非法，必须包含 phase/phase_assignments(含 integrate)/inputs/expected_outputs/acceptance_criteria/impact_scope/execution_mode/resource_keys/handoff_format"
 
     local my_instance
     my_instance=$(detect_my_instance)
@@ -804,8 +909,27 @@ cmd_publish() {
         fi
     fi
 
+    local phase phase_owner impact_scope execution_mode handoff_format
+    local phase_assignments_json inputs_json expected_outputs_json acceptance_json resource_keys_json
+    phase=$(jq -r '.phase' <<<"$normalized_contract")
+    phase_owner=$(jq -r '.phase_owner' <<<"$normalized_contract")
+    impact_scope=$(jq -r '.impact_scope' <<<"$normalized_contract")
+    execution_mode=$(jq -r '.execution_mode' <<<"$normalized_contract")
+    handoff_format=$(jq -r '.handoff_format' <<<"$normalized_contract")
+    phase_assignments_json=$(jq -c '.phase_assignments' <<<"$normalized_contract")
+    inputs_json=$(jq -c '.inputs' <<<"$normalized_contract")
+    expected_outputs_json=$(jq -c '.expected_outputs' <<<"$normalized_contract")
+    acceptance_json=$(jq -c '.acceptance_criteria' <<<"$normalized_contract")
+    resource_keys_json=$(jq -c '.resource_keys' <<<"$normalized_contract")
+
+    local blocked_reason="null"
+    if [[ "$is_blocked" == true ]]; then
+        blocked_reason='"dependency_blocked"'
+    fi
+
     mkdir -p "$TASKS_DIR/$target_dir"
     jq -n \
+        --argjson schema_version "$(_task_schema_version)" \
         --arg id "$task_id" \
         --arg type "$type" \
         --arg from "$my_instance" \
@@ -816,19 +940,41 @@ cmd_publish() {
         --arg created_at "$(get_timestamp)" \
         --arg priority "$priority" \
         --arg group_id "$group_id" \
-        --arg assigned_to "$assign_to" \
+        --arg assigned_to "$phase_owner" \
+        --arg phase "$phase" \
+        --arg phase_owner "$phase_owner" \
+        --arg impact_scope "$impact_scope" \
+        --arg execution_mode "$execution_mode" \
+        --arg handoff_format "$handoff_format" \
         --argjson depends_on "$depends_json" \
         --argjson blocked "$is_blocked" \
         --arg status "$target_status" \
         --argjson verify "$verify_json" \
         --argjson max_retries "${TASK_MAX_RETRIES:-3}" \
+        --argjson phase_assignments "$phase_assignments_json" \
+        --argjson inputs "$inputs_json" \
+        --argjson expected_outputs "$expected_outputs_json" \
+        --argjson acceptance_criteria "$acceptance_json" \
+        --argjson resource_keys "$resource_keys_json" \
+        --argjson blocked_reason "$blocked_reason" \
         '{
+            schema_version: $schema_version,
             id: $id,
             type: $type,
             from: $from,
             title: $title,
             description: $description,
             assigned_to: $assigned_to,
+            phase: $phase,
+            phase_owner: $phase_owner,
+            phase_assignments: $phase_assignments,
+            inputs: $inputs,
+            expected_outputs: $expected_outputs,
+            acceptance_criteria: $acceptance_criteria,
+            impact_scope: $impact_scope,
+            execution_mode: $execution_mode,
+            resource_keys: $resource_keys,
+            handoff_format: $handoff_format,
             branch: $branch,
             commit: $commit,
             created_at: $created_at,
@@ -841,6 +987,8 @@ cmd_publish() {
             group_id: $group_id,
             depends_on: $depends_on,
             blocked: $blocked,
+            blocked_reason: $blocked_reason,
+            resource_blocked_by: null,
             verify: $verify,
             retry_count: 0,
             max_retries: $max_retries,
@@ -851,10 +999,12 @@ cmd_publish() {
             subtasks: [],
             split_status: null,
             depth: 0,
+            phase_results: {},
+            phase_history: [],
             flow_log: [{
                 ts: $created_at, action: "published",
                 from_status: "-", to_status: $status,
-                actor: $from, detail: $title
+                actor: $from, detail: ($title + " [" + $phase + "]")
             }]
         }' > "$TASKS_DIR/$target_dir/$task_id.json"
 
@@ -869,51 +1019,49 @@ cmd_publish() {
         fi
 
         # 向 Story 追加子任务
-        _story_add_task "$group_id" "$task_id" "$title" "$type" "$assign_to" "$branch"
+        _story_add_task "$group_id" "$task_id" "$title" "$type" "$phase_owner" "$branch" "$phase"
     fi
 
     # 发射事件
     emit_event "task.published" "$my_instance" "task_id=$task_id" "type=$type" "title=$title" \
-        "assigned_to=${assign_to:-all}" "group=${group_id:-none}" "blocked=$is_blocked"
+        "assigned_to=${phase_owner}" "group=${group_id:-none}" "blocked=$is_blocked" "phase=$phase"
 
     # 如果不是阻塞的，推送通知（包含完整任务描述）
     if [[ "$is_blocked" == false ]]; then
         local notify_msg="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        notify_msg+=$'\n'"[新任务] $type: $title"
+        notify_msg+=$'\n'"[新任务] [$phase] $type: $title"
         notify_msg+=$'\n'"发布者: $my_instance | 任务ID: $task_id"
-        [[ -n "$assign_to" ]] && notify_msg+=$'\n'"指派给: $assign_to"
+        notify_msg+=$'\n'"阶段负责人: $phase_owner"
+        notify_msg+=$'\n'"执行模式: $execution_mode | 影响范围: $impact_scope"
         [[ -n "$branch" ]] && notify_msg+=$'\n'"分支: $branch"
         [[ -n "$group_id" ]] && notify_msg+=$'\n'"任务组: $group_id"
         if [[ -n "$description" ]]; then
             notify_msg+=$'\n'$'\n'"📋 任务描述:"
             notify_msg+=$'\n'"$description"
         fi
+        notify_msg+=$'\n'$'\n'"输入:"
+        notify_msg+=$'\n'"$(jq -r '.inputs[]' <<<"$normalized_contract" | sed 's/^/- /')"
+        notify_msg+=$'\n'$'\n'"预期输出:"
+        notify_msg+=$'\n'"$(jq -r '.expected_outputs[]' <<<"$normalized_contract" | sed 's/^/- /')"
+        notify_msg+=$'\n'$'\n'"验收标准:"
+        notify_msg+=$'\n'"$(jq -r '.acceptance_criteria[]' <<<"$normalized_contract" | sed 's/^/- /')"
         notify_msg+=$'\n'$'\n'"👉 认领: swarm-msg.sh claim $task_id"
-        notify_msg+=$'\n'"👉 完成后: swarm-msg.sh complete-task $task_id --result \"完成说明\""
+        notify_msg+=$'\n'"👉 完成后: swarm-msg.sh complete-task $task_id \"阶段结果\""
         notify_msg+=$'\n'"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-        if [[ -n "$assign_to" ]]; then
-            # 定向通知：先尝试精确匹配 instance，再回退到角色的所有实例
-            local target_pane
-            target_pane=$(_resolve_pane_by_id "$assign_to")
-            if [[ -n "$target_pane" ]]; then
-                _unified_notify "$assign_to" "$notify_msg" "task.published"
-            else
-                while IFS='|' read -r _p _inst; do
-                    _unified_notify "$_inst" "$notify_msg" "task.published"
-                done < <(resolve_role_to_all_panes "$assign_to")
-            fi
+        # 定向通知：先尝试精确匹配 instance，再回退到角色的所有实例
+        local target_pane
+        target_pane=$(_resolve_pane_by_id "$phase_owner")
+        if [[ -n "$target_pane" ]]; then
+            _unified_notify "$phase_owner" "$notify_msg" "task.published"
         else
-            # 无指派：广播给所有实例（排除发布者自己）
-            while IFS='|' read -r other_inst other_pane; do
-                [[ "$other_inst" == "$my_instance" ]] && continue
-                _unified_notify "$other_inst" "$notify_msg" "task.published"
-            done < <(jq -r '.panes[] | "\(.instance)|\(.pane)"' "$STATE_FILE" 2>/dev/null)
+            while IFS='|' read -r _p _inst; do
+                _unified_notify "$_inst" "$notify_msg" "task.published"
+            done < <(resolve_role_to_all_panes "$phase_owner")
         fi
     fi
 
-    local assign_info=""
-    [[ -n "$assign_to" ]] && assign_info=" → $assign_to"
+    local assign_info=" → $phase_owner"
     if [[ "$is_blocked" == true ]]; then
         info "任务已发布(阻塞中): $task_id ($type: $title)$assign_info [等待依赖: $depends_on]"
     else
@@ -974,7 +1122,7 @@ cmd_list_tasks() {
             fi
 
             found=true
-            jq -r '"  [\(.status)] \(.id)\n    类型: \(.type) | 来自: \(.from) | 优先级: \(.priority)\n    标题: \(.title)\(.branch | if . and . != "" then "\n    分支: "+. else "" end)\(.claimed_by | if . and . != "null" then "\n    认领: "+. else "" end)\(.depends_on | if . and length > 0 then "\n    依赖: "+(.|join(", ")) else "" end)\(.group_id | if . and . != "" then "\n    任务组: "+. else "" end)\(if (.retry_count // 0) > 0 then "\n    重试: \(.retry_count // 0)/\(.max_retries // 3)" else "" end)\(.parent_task // null | if . and . != "null" then "\n    父任务: "+. else "" end)\(.subtasks // [] | if length > 0 then "\n    子任务: "+(.|join(", ")) else "" end)\(.split_status // null | if . and . != "null" then "\n    拆分状态: "+. else "" end)\n"' "$f"
+            jq -r '"  [\(.status)] \(.id)\n    类型: \(.type) | 来自: \(.from) | 优先级: \(.priority)\n    标题: \(.title)\(.phase | if . and . != "" then "\n    阶段: "+. else "" end)\(.phase_owner | if . and . != "" and . != "null" then "\n    阶段负责人: "+. else "" end)\(.branch | if . and . != "" then "\n    分支: "+. else "" end)\(.claimed_by | if . and . != "null" then "\n    认领: "+. else "" end)\(.blocked_reason | if . and . != "null" then "\n    阻塞原因: "+. else "" end)\(.resource_blocked_by | if . and . != "null" then "\n    资源占用方: "+. else "" end)\(.resource_keys | if . and length > 0 then "\n    资源键: "+(.|join(", ")) else "" end)\(.depends_on | if . and length > 0 then "\n    依赖: "+(.|join(", ")) else "" end)\(.group_id | if . and . != "" then "\n    任务组: "+. else "" end)\(if (.retry_count // 0) > 0 then "\n    重试: \(.retry_count // 0)/\(.max_retries // 3)" else "" end)\(.parent_task // null | if . and . != "null" then "\n    父任务: "+. else "" end)\(.subtasks // [] | if length > 0 then "\n    子任务: "+(.|join(", ")) else "" end)\(.split_status // null | if . and . != "null" then "\n    拆分状态: "+. else "" end)\n"' "$f"
         done
         shopt -u nullglob
     done
@@ -1023,6 +1171,7 @@ cmd_claim() {
     local tmp_file="$TASKS_DIR/processing/$task_id.json.tmp"
     jq --arg inst "$my_instance" --arg at "$claimed_at" \
         '.status = "processing" | .claimed_by = $inst | .claimed_at = $at
+         | .blocked_reason = null | .resource_blocked_by = null
          | .flow_log = ((.flow_log // []) + [{
              ts: $at, action: "claimed",
              from_status: "pending", to_status: "processing",
@@ -1042,7 +1191,9 @@ cmd_claim() {
     from_pane=$(_resolve_pane_by_id "$from_id")
 
     local notify="[任务认领] $my_instance 已认领你发布的任务: $task_id"
-    _unified_notify "$from_id" "$notify" "task.claimed"
+    if [[ "$from_id" != "human" ]]; then
+        _unified_notify "$from_id" "$notify" "task.claimed"
+    fi
 
     info "已认领任务: $task_id"
     echo ""
@@ -1125,84 +1276,132 @@ cmd_complete_task() {
     local task_file="$TASKS_DIR/processing/$task_id.json"
     [[ -f "$task_file" ]] || die "任务不在处理中: $task_id"
 
-    # === 质量门（在 processing 阶段执行，通过后才移到 completed） ===
-    if ! _run_quality_gate "$task_id" "$my_instance"; then
-        # Gate 失败，任务保持 processing，通知工蜂修复
+    local schema_version phase
+    schema_version=$(jq -r '.schema_version // ""' "$task_file")
+    phase=$(jq -r '.phase // ""' "$task_file")
+    [[ "$schema_version" == "$(_task_schema_version)" ]] \
+        || die "complete-task: 任务 schema_version=$schema_version，当前内核只接受 V$(_task_schema_version)"
+    [[ -n "$phase" && "$phase" != "done" ]] || die "complete-task: 非法 phase=$phase"
+
+    if [[ "$phase" == "verify" ]]; then
+        if ! _run_quality_gate "$task_id" "$my_instance"; then
+            return 0
+        fi
+    fi
+
+    local completed_at next_phase
+    completed_at=$(get_timestamp)
+    next_phase=$(_next_phase_after_completion "$phase") \
+        || die "complete-task: 未知 phase=$phase"
+
+    if [[ "$next_phase" == "done" ]]; then
+        mkdir -p "$TASKS_DIR/completed"
+        local ctmp="$TASKS_DIR/processing/${task_id}.json.tmp"
+        if jq --arg result "$result" --arg at "$completed_at" --arg actor "$my_instance" --arg phase "$phase" \
+            '.status = "completed"
+             | .phase = "done"
+             | .phase_owner = null
+             | .assigned_to = ""
+             | .claimed_by = $actor
+             | .completed_at = $at
+             | .result = $result
+             | .phase_results[$phase] = $result
+             | .phase_history = ((.phase_history // []) + [{
+                 phase: $phase, owner: $actor, completed_at: $at, result: $result
+               }])
+             | .notification = {
+                 version: "2",
+                 task_id: .id,
+                 status: "completed",
+                 group_id: (.group_id // null),
+                 from: $actor,
+                 title: .title,
+                 summary: .title,
+                 result: $result,
+                 gate_result: "pass",
+                 completed_at: $at
+               }
+             | .flow_log = ((.flow_log // []) + [{
+                 ts: $at, action: "completed",
+                 from_status: "processing", to_status: "completed",
+                 actor: $actor, detail: ($phase + " -> done")
+               }])' \
+            "$task_file" > "$ctmp" 2>/dev/null; then
+            mv "$ctmp" "$TASKS_DIR/completed/$task_id.json"
+            rm -f "$task_file"
+            rm -f "$TASKS_DIR/processing/${task_id}.op.lock" "$TASKS_DIR/processing/${task_id}.compose.lock" 2>/dev/null
+        else
+            rm -f "$ctmp"
+            die "complete-task: jq 处理失败: $task_id"
+        fi
+
+        local completed_file="$TASKS_DIR/completed/$task_id.json"
+        local from_id task_title group_id
+        from_id=$(jq -r '.from' "$completed_file")
+        task_title=$(jq -r '.title' "$completed_file")
+        group_id=$(jq -r '.group_id // ""' "$completed_file")
+
+        emit_event "task.completed_by_queue" "$my_instance" "task_id=$task_id" "summary=$task_title" "phase=$phase"
+
+        if _task_should_notify_on_completion "$completed_file"; then
+            local notify_content
+            notify_content=$(_build_task_notification_xml \
+                "$task_id" "completed" "$my_instance" "$task_title" \
+                "$group_id" "$task_title" "$result" "pass")
+            _unified_notify "$from_id" "$notify_content" "task.completed" "high"
+        fi
+
+        info "任务已完成: $task_id"
+        _story_update_task "$task_id" "completed" "$result" "done"
+        _check_and_unblock "$task_id"
+        _check_subtask_completion "$task_id"
+        _check_group_completion "$task_id"
+        _auto_claim_next "$my_instance"
         return 0
     fi
 
-    # Gate 通过（或无需检查），正式完成: processing → completed
-    local completed_at
-    completed_at=$(get_timestamp)
+    local next_owner
+    next_owner=$(jq -r --arg next_phase "$next_phase" '.phase_assignments[$next_phase] // ""' "$task_file")
+    [[ -n "$next_owner" ]] || die "complete-task: 下一阶段 $next_phase 缺少负责人"
 
-    mkdir -p "$TASKS_DIR/completed"
-    local ctmp="$TASKS_DIR/processing/${task_id}.json.tmp"
-    # 任务完成只写 .notification 结构化元数据（版本化以便后续演进），
-    # 所有下游消费者从 .notification.result 读取产出文本。
-    # gate_result 先占位为 "pass"，Gate 失败时根本走不到这里。
-    if jq --arg result "$result" --arg at "$completed_at" --arg actor "$my_instance" \
-        '.status = "completed"
-         | .completed_at = $at
-         | .notification = {
-             version: "1",
-             task_id: .id,
-             status: "completed",
-             group_id: (.group_id // null),
-             from: $actor,
-             title: .title,
-             summary: .title,
-             result: $result,
-             gate_result: "pass",
-             completed_at: $at
-           }
+    mkdir -p "$TASKS_DIR/pending"
+    local ptmp="$TASKS_DIR/processing/${task_id}.json.tmp"
+    if jq --arg result "$result" \
+        --arg at "$completed_at" \
+        --arg actor "$my_instance" \
+        --arg current_phase "$phase" \
+        --arg next_phase "$next_phase" \
+        --arg next_owner "$next_owner" \
+        '.status = "pending"
+         | .phase = $next_phase
+         | .phase_owner = $next_owner
+         | .assigned_to = $next_owner
+         | .claimed_by = null
+         | .claimed_at = null
+         | .blocked_reason = null
+         | .resource_blocked_by = null
+         | .phase_results[$current_phase] = $result
+         | .phase_history = ((.phase_history // []) + [{
+             phase: $current_phase, owner: $actor, completed_at: $at, result: $result
+           }])
          | .flow_log = ((.flow_log // []) + [{
-             ts: $at, action: "completed",
-             from_status: "processing", to_status: "completed",
-             actor: $actor, detail: ""
+             ts: $at, action: "phase_advanced",
+             from_status: "processing", to_status: "pending",
+             actor: $actor, detail: ($current_phase + " -> " + $next_phase)
            }])' \
-        "$task_file" > "$ctmp" 2>/dev/null; then
-        mv "$ctmp" "$TASKS_DIR/completed/$task_id.json"
+        "$task_file" > "$ptmp" 2>/dev/null; then
+        mv "$ptmp" "$TASKS_DIR/pending/$task_id.json"
         rm -f "$task_file"
         rm -f "$TASKS_DIR/processing/${task_id}.op.lock" "$TASKS_DIR/processing/${task_id}.compose.lock" 2>/dev/null
     else
-        rm -f "$ctmp"
-        die "complete-task: jq 处理失败: $task_id"
+        rm -f "$ptmp"
+        die "complete-task: 阶段推进失败: $task_id"
     fi
 
-    # 提取通知所需字段
-    local from_id task_title group_id
-    from_id=$(jq -r '.from' "$TASKS_DIR/completed/$task_id.json")
-    task_title=$(jq -r '.title' "$TASKS_DIR/completed/$task_id.json")
-    group_id=$(jq -r '.group_id // ""' "$TASKS_DIR/completed/$task_id.json")
-
-    emit_event "task.completed_by_queue" "$my_instance" "task_id=$task_id" "summary=$task_title"
-
-    # 通知发布者（Gate 已通过，此通知可信）
-    # 包装为 <task-notification> XML，让 supervisor 能机器区分系统事件与对话
-    local notify_content
-    notify_content=$(_build_task_notification_xml \
-        "$task_id" "completed" "$my_instance" "$task_title" \
-        "$group_id" "$task_title" "$result" "pass")
-
-    _unified_notify "$from_id" \
-        "$notify_content" \
-        "task.completed" "high"
-
-    info "任务已完成: $task_id"
-
-    # 更新 Story 中的任务状态
-    _story_update_task "$task_id" "completed" "$result"
-
-    # 自动解除依赖此任务的阻塞任务
-    _check_and_unblock "$task_id"
-
-    # 检查子任务归一（如果本任务是某个父任务的子任务）
-    _check_subtask_completion "$task_id"
-
-    # 检查所属任务组是否全部完成
-    _check_group_completion "$task_id"
-
-    # 自动拉取下一个任务（工蜂自驱动）
+    local pending_file="$TASKS_DIR/pending/$task_id.json"
+    emit_event "task.phase_advanced" "$my_instance" "task_id=$task_id" "from_phase=$phase" "to_phase=$next_phase"
+    _story_update_task "$task_id" "pending" "$result" "$next_phase"
+    _notify_phase_handoff "$pending_file" "$phase" "$result"
     _auto_claim_next "$my_instance"
 }
 

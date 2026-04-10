@@ -132,6 +132,7 @@ section "Test 3: category 推断"
 
 assert_eq "core/backend.md → core"             "core"       "$(infer_category_from_config 'core/backend.md')"
 assert_eq "quality/reviewer.md → quality"      "quality"    "$(infer_category_from_config 'quality/reviewer.md')"
+assert_eq "quality/integrator.md → quality"    "quality"    "$(infer_category_from_config 'quality/integrator.md')"
 assert_eq "management/supervisor.md → mgmt"    "management" "$(infer_category_from_config 'management/supervisor.md')"
 assert_eq "unknown/foo.md → core (fallback)"   "core"       "$(infer_category_from_config 'unknown/foo.md')"
 

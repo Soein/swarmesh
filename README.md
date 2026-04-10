@@ -136,8 +136,9 @@ swarm-msg.sh mark-read --all
 # Create task group
 swarm-msg.sh create-group "User auth module"
 
-# Publish task (type: develop/review/design/test/...)
-swarm-msg.sh publish develop "Implement login page" --assign frontend
+# Publish task (V2 contract required, no backward compatibility with --assign)
+swarm-msg.sh publish develop "Implement login page" \
+  --contract '{"phase":"implement","phase_assignments":{"research":"frontend","synthesize":"frontend","implement":"frontend","integrate":"integrator","verify":"reviewer"},"inputs":["Build login page"],"expected_outputs":["Code changes","Review conclusion"],"acceptance_criteria":["verify passed"],"impact_scope":"write","execution_mode":"exclusive","resource_keys":["repo:frontend/login"],"handoff_format":"markdown"}'
 
 # List tasks
 swarm-msg.sh list-tasks
@@ -219,12 +220,17 @@ swarm-msg.sh set-verify '{"build":"go build ./...","test":"go test ./..."}' --ro
 swarm-msg.sh set-verify '{"build":"npm run build","test":"npm test"}' --role frontend
 
 # Or specify at task publish time
-swarm-msg.sh publish develop "Implement API" --assign backend --verify '{"build":"go build ./..."}'
+swarm-msg.sh publish develop "Implement API" \
+  --contract '{"phase":"implement","phase_assignments":{"research":"backend","synthesize":"backend","implement":"backend","integrate":"integrator","verify":"reviewer"},"inputs":["Implement API"],"expected_outputs":["Code changes","Verification result"],"acceptance_criteria":["API works","verify passed"],"impact_scope":"write","execution_mode":"exclusive","resource_keys":["repo:backend/api"],"handoff_format":"markdown"}' \
+  --verify '{"build":"go build ./..."}'
 ```
+
+`resource_keys` now serve as integration hints only. They do not block parallel claims; they help identify which tasks should be integrated together later.
 
 #### Subtask System
 
-Complex tasks can be decomposed into subtasks with dependency management and multi-level nesting:
+Complex tasks can be decomposed into subtasks with dependency management and multi-level nesting.
+Note: here `--assign` is still valid because it assigns subtasks, not `publish`:
 
 ```bash
 # Split a task into subtasks
@@ -421,7 +427,7 @@ swarmesh/
 │   │   └── full-stack.json  # 14-role full team
 │   ├── roles/               # Role system prompts
 │   │   ├── core/            # Core dev (frontend, backend, database, devops)
-│   │   ├── quality/         # QA (tester, reviewer, security, performance)
+│   │   ├── quality/         # QA (tester, reviewer, integrator, security, performance)
 │   │   └── management/      # Management (supervisor, architect, auditor, inspector, ui-designer, prd)
 │   ├── cli-routing.json     # CLI routing config
 │   └── notification-policy.json  # Notification delivery policy
@@ -603,8 +609,9 @@ swarm-msg.sh mark-read --all
 # 创建任务组
 swarm-msg.sh create-group "用户认证模块"
 
-# 发布任务（type: develop/review/design/test/...）
-swarm-msg.sh publish develop "实现登录页面" --assign frontend
+# 发布任务（V2 contract 必填，不再兼容 --assign）
+swarm-msg.sh publish develop "实现登录页面" \
+  --contract '{"phase":"implement","phase_assignments":{"research":"frontend","synthesize":"frontend","implement":"frontend","integrate":"integrator","verify":"reviewer"},"inputs":["实现登录页面"],"expected_outputs":["代码变更","审查结论"],"acceptance_criteria":["verify 通过"],"impact_scope":"write","execution_mode":"exclusive","resource_keys":["repo:frontend/login"],"handoff_format":"markdown"}'
 
 # 查看任务列表
 swarm-msg.sh list-tasks
@@ -685,12 +692,17 @@ swarm-msg.sh set-verify '{"build":"go build ./...","test":"go test ./..."}' --ro
 swarm-msg.sh set-verify '{"build":"npm run build","test":"npm test"}' --role frontend
 
 # 或发布任务时指定
-swarm-msg.sh publish develop "实现 API" --assign backend --verify '{"build":"go build ./..."}'
+swarm-msg.sh publish develop "实现 API" \
+  --contract '{"phase":"implement","phase_assignments":{"research":"backend","synthesize":"backend","implement":"backend","integrate":"integrator","verify":"reviewer"},"inputs":["实现 API"],"expected_outputs":["代码变更","验证结果"],"acceptance_criteria":["接口可运行","verify 通过"],"impact_scope":"write","execution_mode":"exclusive","resource_keys":["repo:backend/api"],"handoff_format":"markdown"}' \
+  --verify '{"build":"go build ./..."}'
 ```
+
+`resource_keys` 现在只作为后置集成线索，不再阻塞并行认领；它用来标记哪些任务后续应该一起集成、一起验收。
 
 #### 子任务拆分
 
-复杂任务可拆分为子任务，支持依赖管理和多层嵌套：
+复杂任务可拆分为子任务，支持依赖管理和多层嵌套。
+注意：这里的 `--assign` 仍然有效，因为它分配的是子任务，不是 `publish`：
 
 ```bash
 # 拆分任务为子任务
@@ -887,7 +899,7 @@ swarmesh/
 │   │   └── full-stack.json  # 14 角色完整团队
 │   ├── roles/               # 角色 system prompt
 │   │   ├── core/            # 核心开发（frontend, backend, database, devops）
-│   │   ├── quality/         # 质量保障（tester, reviewer, security, performance）
+│   │   ├── quality/         # 质量保障（tester, reviewer, integrator, security, performance）
 │   │   └── management/      # 管理协调（supervisor, architect, auditor, inspector, ui-designer, prd）
 │   ├── cli-routing.json     # CLI 路由配置
 │   └── notification-policy.json  # 通知投递策略

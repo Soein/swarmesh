@@ -746,13 +746,14 @@ swarm-msg.sh - CLI-to-CLI 自主消息 & 任务队列工具
   cleanup [--ttl <秒>] [--gate-logs] [--dry-run]  清理过期消息/任务/质量门日志
 
 publish 选项:
-  --assign|-a <role>           指派给特定角色（只有该角色能认领，通知也只推给该角色）
   --description|-d "<text>"    任务详细描述
   --priority|-p <level>        优先级: low/normal/high (默认: normal)
   --group|-g <group-id>        关联到任务组
   --depends <id1,id2,...>      依赖的任务 ID（逗号分隔，阻塞直到依赖完成）
   --branch|-b <branch>         指定关联分支（覆盖自动检测，支持逗号分隔多分支）
   --verify|-V <json>           任务级验证命令（JSON 对象，如 '{"test":"go test ./..."}'）
+  --contract|-C <json>         V2 任务契约（必须包含 phase/phase_assignments[含integrate]/inputs/expected_outputs/acceptance_criteria/impact_scope/execution_mode/resource_keys/handoff_format）
+  注意: publish 不再支持 --assign，负责人必须写入 --contract.phase_assignments
 
 split-task 选项（可重复使用 --subtask 定义多个子任务）:
   --subtask|-s "<title>"         子任务标题（每个 --subtask 开启一组新参数）
@@ -789,25 +790,22 @@ wait 选项:
   swarm-msg.sh broadcast "API 接口已就绪"
 
   # 任务队列（独立任务）
-  swarm-msg.sh publish review "审核用户注册 API" --assign reviewer -d "实现了注册、登录、JWT 鉴权"
+  swarm-msg.sh publish review "审核用户注册 API" \
+    --contract '{"phase":"verify","phase_assignments":{"research":"reviewer","synthesize":"reviewer","implement":"reviewer","integrate":"integrator","verify":"reviewer"},"inputs":["审核目标"],"expected_outputs":["审查结论"],"acceptance_criteria":["结论可执行"],"impact_scope":"read_only","execution_mode":"parallel","resource_keys":[],"handoff_format":"markdown"}' \
+    -d "实现了注册、登录、JWT 鉴权"
   swarm-msg.sh claim task-xxx
   swarm-msg.sh complete-task task-xxx "审核通过"
 
-  # 编排者定向派发（先查角色再分配）
+  # 编排者派发（通过 contract 声明阶段负责人）
   swarm-msg.sh list-roles                        # 查看在线角色
-  swarm-msg.sh publish develop "实现注册 API" --assign backend \
-    -d "实现 POST /api/register, 参数: email, password, name"
-  swarm-msg.sh publish develop "设计 users 表" --assign database \
-    -d "字段: id, email, password_hash, name, created_at"
-  swarm-msg.sh publish develop "实现注册页面" --assign frontend \
-    -d "表单: 邮箱、密码、姓名, 调用 POST /api/register"
+  swarm-msg.sh publish develop "实现注册 API" \
+    --contract '{"phase":"implement","phase_assignments":{"research":"backend","synthesize":"backend","implement":"backend","integrate":"integrator","verify":"reviewer"},"inputs":["实现 POST /api/register"],"expected_outputs":["接口实现","验证结果"],"acceptance_criteria":["接口可运行","verify 通过"],"impact_scope":"write","execution_mode":"exclusive","resource_keys":["repo:backend/api/register"],"handoff_format":"markdown"}'
 
-  # 任务组（带依赖 + 指派的批量任务）
+  # 任务组（带依赖的批量任务）
   G=$(swarm-msg.sh create-group "用户注册系统")
-  T1=$(swarm-msg.sh publish develop "实现注册 API" -g $G --assign backend)
-  T2=$(swarm-msg.sh publish develop "设计 users 表" -g $G --assign database)
-  T3=$(swarm-msg.sh publish develop "实现注册页面" -g $G --assign frontend --depends $T2)
-  T4=$(swarm-msg.sh publish review "审核全部代码" -g $G --assign reviewer --depends $T1,$T2,$T3)
+  T1=$(swarm-msg.sh publish develop "实现注册 API" -g $G --contract '<contract-json>')
+  T2=$(swarm-msg.sh publish develop "设计 users 表" -g $G --depends $T1 --contract '<contract-json>')
+  T3=$(swarm-msg.sh publish review "审核全部代码" -g $G --depends $T1,$T2 --contract '<contract-json>')
   swarm-msg.sh group-status $G
   swarm-msg.sh list-tasks --group $G --all
 
@@ -840,7 +838,9 @@ wait 选项:
   swarm-msg.sh set-verify '{"build":"cd backend && go build ./..."}' --role backend
   swarm-msg.sh set-verify '{"build":"npm run build","test":"npm test"}' --role frontend
   # 或发任务时逐个指定
-  swarm-msg.sh publish develop "实现 API" --assign backend --verify '{"build":"go build ./...","test":"go test ./..."}'
+  swarm-msg.sh publish develop "实现 API" \
+    --contract '{"phase":"implement","phase_assignments":{"research":"backend","synthesize":"backend","implement":"backend","integrate":"integrator","verify":"reviewer"},"inputs":["实现 API"],"expected_outputs":["代码变更","验证结果"],"acceptance_criteria":["build/test 通过"],"impact_scope":"write","execution_mode":"exclusive","resource_keys":["repo:backend/api"],"handoff_format":"markdown"}' \
+    --verify '{"build":"go build ./...","test":"go test ./..."}'
   # 查看任务组 Story
   swarm-msg.sh story-view $G
 

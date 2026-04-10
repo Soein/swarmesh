@@ -1,6 +1,6 @@
 {
   "name": "最小团队",
-  "description": "快速验证概念的最小配置 - 3 个核心角色",
+  "description": "快速验证概念的最小配置 - 4 个基础角色",
   "version": "1.0.0",
   "created": "2026-02-12",
   "roles": [
@@ -30,6 +30,15 @@
       "alias": "review,rv,reviewer,2",
       "title": "🔍 代码审查员",
       "description": "代码质量审查专家，负责代码规范和最佳实践验证"
+    },
+    {
+      "name": "integrator",
+      "cli": "codex chat",
+      "config": "quality/integrator.md",
+      "category": "quality",
+      "alias": "merge,intg,integrator,3",
+      "title": "🧩 集成员",
+      "description": "后置集成专家，负责收敛多角色结果和整理集成摘要"
     }
   ],
   "config": {

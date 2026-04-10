@@ -1,60 +1,112 @@
 {
+  "schema_version": 2,
   "name": "完整功能开发流程",
-  "description": "从需求分析到代码审查的完整功能开发工作流",
-  "version": "1.0",
+  "description": "需求分析、实现与验收的三阶段示例。",
   "stages": [
     {
       "stage": 1,
-      "name": "数据库设计",
-      "parallel": false,
+      "name": "需求澄清",
+      "execution_mode": "serial",
       "tasks": [
         {
-          "id": "db-design",
-          "role": "database",
-          "template": "请为以下需求设计数据库表结构，包括：表定义、字段类型、索引、约束关系。需求：{{requirement}}",
-          "timeout": 300
+          "id": "feature-prd",
+          "title": "澄清需求并生成 spec",
+          "type": "orchestrate",
+          "description": "围绕以下需求产出事实清单与实现 spec：{{requirement}}",
+          "phase": "research",
+          "phase_assignments": {
+            "research": "supervisor",
+            "synthesize": "supervisor",
+            "implement": "supervisor",
+            "integrate": "integrator",
+            "verify": "inspector"
+          },
+          "expected_outputs": [
+            "事实清单",
+            "可执行 spec",
+            "实施方案",
+            "验收结论"
+          ],
+          "acceptance_criteria": [
+            "research 只能产出事实",
+            "synthesize 必须转成可执行 spec",
+            "整体完成后才允许向 human 汇报"
+          ],
+          "impact_scope": "read_only",
+          "execution_mode": "parallel",
+          "resource_keys": [],
+          "handoff_format": "markdown"
         }
       ]
     },
     {
       "stage": 2,
-      "name": "核心开发",
-      "parallel": true,
+      "name": "实现",
+      "execution_mode": "parallel",
       "tasks": [
         {
           "id": "backend-dev",
-          "role": "backend",
-          "depends_on": ["db-design"],
-          "template": "基于以下数据库设计，实现后端 API 接口（RESTful 风格）。需求：{{requirement}}\n\n数据库设计：\n{{db-design}}",
-          "timeout": 600
+          "title": "实现后端改动",
+          "type": "develop",
+          "description": "基于上一阶段 spec 完成后端实现：{{feature-prd}}",
+          "phase": "implement",
+          "phase_assignments": {
+            "research": "backend",
+            "synthesize": "backend",
+            "implement": "backend",
+            "integrate": "integrator",
+            "verify": "reviewer"
+          },
+          "expected_outputs": [
+            "代码变更",
+            "关键实现说明",
+            "最终验收结论"
+          ],
+          "acceptance_criteria": [
+            "代码可运行",
+            "verify 通过后才完成"
+          ],
+          "impact_scope": "write",
+          "execution_mode": "exclusive",
+          "resource_keys": [
+            "repo:backend"
+          ],
+          "handoff_format": "markdown",
+          "verify": {
+            "test": "echo '替换为真实后端测试命令'"
+          }
         },
         {
           "id": "frontend-dev",
-          "role": "frontend",
-          "depends_on": ["db-design"],
-          "template": "基于以下数据模型，实现前端页面和组件。需求：{{requirement}}\n\n数据模型参考：\n{{db-design}}",
-          "timeout": 600
-        }
-      ]
-    },
-    {
-      "stage": 3,
-      "name": "测试与审查",
-      "parallel": true,
-      "tasks": [
-        {
-          "id": "code-test",
-          "role": "tester",
-          "depends_on": ["backend-dev", "frontend-dev"],
-          "template": "请为以下实现编写测试用例并执行测试。需求：{{requirement}}\n\n后端实现：\n{{backend-dev}}\n\n前端实现：\n{{frontend-dev}}",
-          "timeout": 300
-        },
-        {
-          "id": "code-review",
-          "role": "reviewer",
-          "depends_on": ["backend-dev", "frontend-dev"],
-          "template": "请审查以下代码实现，检查代码质量、规范性、安全性和性能问题。\n\n后端代码：\n{{backend-dev}}\n\n前端代码：\n{{frontend-dev}}",
-          "timeout": 300
+          "title": "实现前端改动",
+          "type": "develop",
+          "description": "基于上一阶段 spec 完成前端实现：{{feature-prd}}",
+          "phase": "implement",
+          "phase_assignments": {
+            "research": "frontend",
+            "synthesize": "frontend",
+            "implement": "frontend",
+            "integrate": "integrator",
+            "verify": "reviewer"
+          },
+          "expected_outputs": [
+            "代码变更",
+            "交互说明",
+            "最终验收结论"
+          ],
+          "acceptance_criteria": [
+            "页面可构建",
+            "verify 通过后才完成"
+          ],
+          "impact_scope": "write",
+          "execution_mode": "exclusive",
+          "resource_keys": [
+            "repo:frontend"
+          ],
+          "handoff_format": "markdown",
+          "verify": {
+            "build": "echo '替换为真实前端构建命令'"
+          }
         }
       ]
     }

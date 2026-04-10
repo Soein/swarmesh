@@ -124,7 +124,7 @@ swarm-msg.sh send inspector "请分析项目技术栈并配置质量门。
 ### 第 4 步: 拆解任务
 
 分析需求，拆分为具体子任务。每个子任务要明确：
-- 指派给哪个角色（`--assign`）
+- 当前阶段负责人、integrate 负责人和后续验收人（写进 `--contract.phase_assignments`）
 - 详细的任务描述（`--description`），包含具体要求、接口约定、验收标准
 - 任务间的依赖关系（`--depends`）
 
@@ -137,18 +137,22 @@ G=$(swarm-msg.sh create-group "需求标题")
 # 如果有 PRD，关联到任务组（便于 inspector 验收时追溯原始需求）
 swarm-msg.sh set-prd $G "PRD 内容..."
 
-# 派发子任务（定向指派 + 详细描述）
-T1=$(swarm-msg.sh publish develop "设计 users 表" -g $G --assign database \
+# 派发子任务（V2 contract + 详细描述）
+T1=$(swarm-msg.sh publish develop "设计 users 表" -g $G \
+  --contract '{"phase":"implement","phase_assignments":{"research":"database","synthesize":"database","implement":"database","integrate":"integrator","verify":"reviewer"},"inputs":["设计 users 表"],"expected_outputs":["Schema","验证结果"],"acceptance_criteria":["表结构可执行","verify 通过"],"impact_scope":"write","execution_mode":"exclusive","resource_keys":["repo:database/users"],"handoff_format":"markdown"}' \
   -d "创建 users 表，字段: id(bigint,PK), email(unique), password_hash, name, created_at, updated_at。添加 email 索引。")
 
-T2=$(swarm-msg.sh publish develop "实现注册 API" -g $G --assign backend --depends $T1 \
+T2=$(swarm-msg.sh publish develop "实现注册 API" -g $G --depends $T1 \
+  --contract '{"phase":"implement","phase_assignments":{"research":"backend","synthesize":"backend","implement":"backend","integrate":"integrator","verify":"reviewer"},"inputs":["实现注册 API"],"expected_outputs":["接口实现","验证结果"],"acceptance_criteria":["接口可运行","verify 通过"],"impact_scope":"write","execution_mode":"exclusive","resource_keys":["repo:backend/auth/register"],"handoff_format":"markdown"}' \
   -d "实现 POST /api/auth/register，参数: email, password, name。密码用 bcrypt 哈希。返回 JWT token。依赖 database 完成 users 表。")
 
-T3=$(swarm-msg.sh publish develop "实现注册页面" -g $G --assign frontend --depends $T2 \
+T3=$(swarm-msg.sh publish develop "实现注册页面" -g $G --depends $T2 \
+  --contract '{"phase":"implement","phase_assignments":{"research":"frontend","synthesize":"frontend","implement":"frontend","integrate":"integrator","verify":"reviewer"},"inputs":["实现注册页面"],"expected_outputs":["页面实现","验证结果"],"acceptance_criteria":["页面可构建","verify 通过"],"impact_scope":"write","execution_mode":"exclusive","resource_keys":["repo:frontend/register"],"handoff_format":"markdown"}' \
   -d "实现注册表单页面，包含邮箱、密码、姓名字段。表单验证。调用 POST /api/auth/register。成功后跳转首页。")
 
-T4=$(swarm-msg.sh publish review "审核注册功能" -g $G --assign reviewer --depends $T1,$T2,$T3 \
+T4=$(swarm-msg.sh publish review "审核注册功能" -g $G --depends $T1,$T2,$T3 \
   --branch "swarm/database,swarm/backend,swarm/frontend" \
+  --contract '{"phase":"verify","phase_assignments":{"research":"reviewer","synthesize":"reviewer","implement":"reviewer","integrate":"integrator","verify":"reviewer"},"inputs":["审核注册功能"],"expected_outputs":["审查结论"],"acceptance_criteria":["结论可执行"],"impact_scope":"read_only","execution_mode":"parallel","resource_keys":[],"handoff_format":"markdown"}' \
   -d "审核整个注册功能的代码质量，重点: SQL注入防护、密码安全、输入验证、错误处理。")
 
 # 通知 inspector 验收标准
@@ -245,7 +249,9 @@ user 字段为 undefined。
 2. 如为 null，return res.status(401).json({error: 'Session expired'})
 3. 不要改 src/auth/types.ts 的类型定义
 
-完成后提交并报告 commit hash。" --assign backend --depends task-003
+完成后提交并报告 commit hash。" \
+  --depends task-003 \
+  --contract '{"phase":"implement","phase_assignments":{"research":"backend","synthesize":"backend","implement":"backend","integrate":"integrator","verify":"reviewer"},"inputs":["修复空指针"],"expected_outputs":["代码变更","验证结果"],"acceptance_criteria":["verify 通过"],"impact_scope":"write","execution_mode":"exclusive","resource_keys":["repo:backend/auth/validate"],"handoff_format":"markdown"}'
 ```
 
 ### 理由
@@ -275,12 +281,15 @@ user 字段为 undefined。
 
 | 情形 | 选择 | 命令 | 原因 |
 |---|---|---|---|
-| 调研任务刚完成，同一工蜂马上做实现 | **复用**（继续给同一 instance 派活） | `publish develop ... --assign backend` | 工蜂上下文里还有刚读过的代码，避免重新 grep |
-| 工蜂上一次实现失败，需要修正 | **复用** | `publish develop ... --assign backend` | 错误上下文还在，修正更精准 |
+| 调研任务刚完成，同一工蜂马上做实现 | **复用**（继续给同一 instance 派活） | `publish develop ... --contract=<implement owner=backend>` | 工蜂上下文里还有刚读过的代码，避免重新 grep |
+| 工蜂上一次实现失败，需要修正 | **复用** | `publish develop ... --contract=<implement owner=backend>` | 错误上下文还在，修正更精准 |
 | 验收新工蜂刚写的代码 | **新起 fresh 实例**做 review | `swarm-join.sh reviewer --cli "..."` | fresh eyes，避免被实现者的思路污染 |
 | 上一次尝试走错方向，需要彻底重来 | **新起 fresh 实例** | `swarm-join.sh backend --cli "..."` | 避免错误上下文锚定，clean slate |
 | 需要完全不相关的新任务 | **新起 fresh 实例** | `swarm-join.sh` | 老实例上下文无复用价值 |
 | 多任务并行、当前实例已超载 | **新起同角色多实例** | `swarm-join.sh backend --cli "..."` （会自动编号 backend-2） | 分担负载 |
+
+说明：`publish` 已不支持 `--assign`。如果希望当前任务由 backend 负责，就在 contract 里把当前阶段 owner 写成 `backend`；如果希望指定到某个实例，可写成 `backend-2`。
+`resource_keys` 只用于标记哪些任务后续需要一起集成，不再阻塞并行认领。
 
 ### 核心判断：上下文重叠度
 
@@ -376,8 +385,8 @@ swarm-join.sh backend --cli "claude chat" --config core/backend.md
 **实例命名规则**: 首实例名 = 角色名（如 `backend`），后续实例自动编号（`backend-2`、`backend-3`）。
 
 **任务分配**:
-- `--assign backend` → 任意 backend 实例可认领（先到先得）
-- `--assign backend-2` → 只有 backend-2 可认领（精确指派）
+- `publish ... --contract=<owner=backend>` → 任意 backend 实例可认领（先到先得）
+- `publish ... --contract=<owner=backend-2>` → 只有 backend-2 可认领（精确指派）
 
 **消息路由**:
 - `swarm-msg.sh send backend "msg"` → 发给首实例 backend
@@ -488,7 +497,7 @@ swarm-msg.sh request-supervisor "多任务组并行，编排负载过高"
 
 | 选项 | 说明 |
 |------|------|
-| `--assign/-a <role>` | 兜底指派（限制只有该角色能认领，正常情况工蜂自行认领） |
+| `--contract/-C <json>` | 必填 V2 任务契约，包含 phase、phase_assignments（含 integrate）、inputs、expected_outputs、acceptance_criteria、impact_scope、execution_mode、resource_keys、handoff_format |
 | `--description/-d "<text>"` | 任务详细描述（必须写清楚！） |
 | `--depends <id1,id2>` | 依赖的前置任务（控制执行顺序） |
 | `--branch/-b <branches>` | 关联分支（审查任务必填，逗号分隔多分支如 `swarm/backend,swarm/frontend`） |

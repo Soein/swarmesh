@@ -205,6 +205,32 @@ count_tasks() {
     echo "$count"
 }
 
+collect_task_rows() {
+    local rows='[]'
+    local status_dir
+    for status_dir in pending processing blocked completed failed; do
+        [[ -d "$TASKS_DIR/$status_dir" ]] || continue
+        while IFS= read -r task_file; do
+            [[ -f "$task_file" ]] || continue
+            local task_json
+            task_json=$(jq -c --arg status "$status_dir" \
+                '{
+                    id: .id,
+                    title: .title,
+                    status: $status,
+                    phase: (.phase // ""),
+                    owner: (.phase_owner // .assigned_to // ""),
+                    blocked_reason: (.blocked_reason // ""),
+                    resource_blocked_by: (.resource_blocked_by // ""),
+                    resource_keys: (.resource_keys // []),
+                    priority: (.priority // "normal")
+                }' "$task_file" 2>/dev/null) || continue
+            rows=$(jq -c --argjson task "$task_json" '. + [$task]' <<<"$rows")
+        done < <(find "$TASKS_DIR/$status_dir" -maxdepth 1 -name '*.json' -type f | sort)
+    done
+    echo "$rows"
+}
+
 # 获取日志文件大小
 get_log_size() {
     local role_name="$1"
@@ -242,9 +268,13 @@ format_status() {
     local pending_count
     local processing_count
     local completed_count
+    local blocked_count
     pending_count=$(count_tasks "pending")
     processing_count=$(count_tasks "processing")
     completed_count=$(count_tasks "completed")
+    blocked_count=$(count_tasks "blocked")
+    local task_rows
+    task_rows=$(collect_task_rows)
 
     # 显示标题
     if [[ "$use_color" == "true" ]]; then
@@ -351,12 +381,35 @@ format_status() {
         echo -e "${COLOR_LABEL}${EMOJI_TASK} 任务统计:${COLOR_RESET}"
         printf "  ${COLOR_LABEL}待处理:${COLOR_RESET} ${COLOR_VALUE}%d${COLOR_RESET}\n" "$pending_count"
         printf "  ${COLOR_LABEL}进行中:${COLOR_RESET} ${COLOR_VALUE}%d${COLOR_RESET}\n" "$processing_count"
+        printf "  ${COLOR_LABEL}阻塞中:${COLOR_RESET} ${COLOR_VALUE}%d${COLOR_RESET}\n" "$blocked_count"
         printf "  ${COLOR_LABEL}已完成:${COLOR_RESET} ${COLOR_VALUE}%d${COLOR_RESET}\n" "$completed_count"
     else
         echo "任务统计:"
         printf "  待处理: %d\n" "$pending_count"
         printf "  进行中: %d\n" "$processing_count"
+        printf "  阻塞中: %d\n" "$blocked_count"
         printf "  已完成: %d\n" "$completed_count"
+    fi
+
+    if [[ "$(jq 'length' <<<"$task_rows")" -gt 0 ]]; then
+        echo ""
+        if [[ "$use_color" == "true" ]]; then
+            echo -e "${COLOR_LABEL}关键任务:${COLOR_RESET}"
+        else
+            echo "关键任务:"
+        fi
+        jq -r '
+            map(select(.status == "processing" or .status == "blocked" or .status == "pending"))
+            | sort_by(
+                if .status == "processing" then 0
+                elif .status == "blocked" then 1
+                else 2
+                end
+            )
+            | .[:8]
+            | .[]
+            | "  [\(.status)] \(.id) | \(.title) | phase=\(.phase)\(.owner | if . != \"\" then \" | owner=\" + . else \"\" end)\(.resource_keys | if length > 0 then \" | resources=\" + (join(\",\")) else \"\" end)\(.blocked_reason | if . != \"\" then \" | blocked=\" + . else \"\" end)\(.resource_blocked_by | if . != \"\" then \"(\" + . + \")\" else \"\" end)"
+        ' <<<"$task_rows"
     fi
 
     echo ""
@@ -382,9 +435,13 @@ format_json() {
     local pending_count
     local processing_count
     local completed_count
+    local blocked_count
     pending_count=$(count_tasks "pending")
     processing_count=$(count_tasks "processing")
     completed_count=$(count_tasks "completed")
+    blocked_count=$(count_tasks "blocked")
+    local task_rows
+    task_rows=$(collect_task_rows)
 
     # 构建角色状态数组
     local roles_json="[]"
@@ -430,7 +487,9 @@ format_json() {
         --argjson roles "$roles_json" \
         --argjson pending "$pending_count" \
         --argjson processing "$processing_count" \
+        --argjson blocked "$blocked_count" \
         --argjson completed "$completed_count" \
+        --argjson task_rows "$task_rows" \
         '{
             status: $status,
             uptime: $uptime,
@@ -438,8 +497,10 @@ format_json() {
             tasks: {
                 pending: $pending,
                 processing: $processing,
+                blocked: $blocked,
                 completed: $completed
-            }
+            },
+            task_rows: $task_rows
         }'
 }
 

@@ -1,134 +1,149 @@
 {
-  "name": "product-feature",
-  "description": "端到端产品特性开发工作流（需求→设计→开发→测试→部署）",
-  "version": "1.0.0",
-  "variables": {
-    "requirement": {
-      "description": "产品需求描述",
-      "required": true
-    }
-  },
+  "schema_version": 2,
+  "name": "产品特性交付",
+  "description": "面向完整产品特性的 V2 工作流示例。",
   "stages": [
     {
-      "name": "需求分析",
-      "parallel": false,
+      "stage": 1,
+      "name": "产品澄清",
+      "execution_mode": "serial",
       "tasks": [
         {
-          "id": "req-analysis",
-          "title": "需求分析与 PRD 编写",
-          "type": "analysis",
-          "assign_role": "prd",
-          "description": "基于 {{requirement}} 进行需求分析，输出完整的 PRD 文档，包含用户故事、验收标准和优先级排序。"
+          "id": "prd-spec",
+          "title": "梳理需求并形成 spec",
+          "type": "orchestrate",
+          "description": "围绕产品需求形成事实清单和可执行 spec：{{requirement}}",
+          "phase": "research",
+          "phase_assignments": {
+            "research": "prd",
+            "synthesize": "architect",
+            "implement": "supervisor",
+            "integrate": "integrator",
+            "verify": "inspector"
+          },
+          "expected_outputs": [
+            "事实清单",
+            "可执行 spec",
+            "实施方案",
+            "最终验收结论"
+          ],
+          "acceptance_criteria": [
+            "research 只能产出事实",
+            "synthesize 必须转成可执行 spec",
+            "整体完成后才向 human 汇报"
+          ],
+          "impact_scope": "read_only",
+          "execution_mode": "parallel",
+          "resource_keys": [],
+          "handoff_format": "markdown"
         }
       ]
     },
     {
-      "name": "架构设计",
-      "parallel": false,
+      "stage": 2,
+      "name": "并行实现",
+      "execution_mode": "parallel",
       "tasks": [
         {
-          "id": "arch-design",
-          "title": "技术架构设计",
-          "type": "architecture",
-          "assign_role": "architect",
-          "depends_on": ["req-analysis"],
-          "description": "基于 {{req-analysis}} 的 PRD，设计技术架构方案，包含技术选型、模块划分、接口定义和数据流。",
+          "id": "backend-feature",
+          "title": "实现后端功能",
+          "type": "develop",
+          "description": "基于产品 spec 完成后端实现：{{prd-spec}}",
+          "phase": "implement",
+          "phase_assignments": {
+            "research": "backend",
+            "synthesize": "backend",
+            "implement": "backend",
+            "integrate": "integrator",
+            "verify": "reviewer"
+          },
+          "expected_outputs": [
+            "后端代码",
+            "关键接口说明",
+            "最终验收结论"
+          ],
+          "acceptance_criteria": [
+            "后端改动通过 verify",
+            "输出包含关键风险"
+          ],
+          "impact_scope": "write",
+          "execution_mode": "exclusive",
+          "resource_keys": [
+            "repo:backend"
+          ],
+          "handoff_format": "markdown",
           "verify": {
-            "schema-check": "echo '架构文档完整性检查'"
+            "test": "echo '替换为真实后端测试命令'"
+          }
+        },
+        {
+          "id": "frontend-feature",
+          "title": "实现前端功能",
+          "type": "develop",
+          "description": "基于产品 spec 完成前端实现：{{prd-spec}}",
+          "phase": "implement",
+          "phase_assignments": {
+            "research": "frontend",
+            "synthesize": "frontend",
+            "implement": "frontend",
+            "integrate": "integrator",
+            "verify": "reviewer"
+          },
+          "expected_outputs": [
+            "前端代码",
+            "交互说明",
+            "最终验收结论"
+          ],
+          "acceptance_criteria": [
+            "前端改动通过 verify",
+            "输出包含关键风险"
+          ],
+          "impact_scope": "write",
+          "execution_mode": "exclusive",
+          "resource_keys": [
+            "repo:frontend"
+          ],
+          "handoff_format": "markdown",
+          "verify": {
+            "build": "echo '替换为真实前端构建命令'"
           }
         }
       ]
     },
     {
-      "name": "数据库设计",
-      "parallel": false,
+      "stage": 3,
+      "name": "交付验收",
+      "execution_mode": "serial",
       "tasks": [
         {
-          "id": "db-design",
-          "title": "数据库 Schema 设计",
-          "type": "develop",
-          "assign_role": "database",
-          "depends_on": ["arch-design"],
-          "description": "基于 {{arch-design}} 的架构方案，设计数据库 Schema，包含表结构、索引、迁移脚本和数据字典。"
-        }
-      ]
-    },
-    {
-      "name": "核心开发",
-      "parallel": true,
-      "tasks": [
-        {
-          "id": "backend-dev",
-          "title": "后端 API 开发",
-          "type": "develop",
-          "assign_role": "backend",
-          "depends_on": ["db-design", "arch-design"],
-          "description": "基于 {{arch-design}} 的接口定义和 {{db-design}} 的数据模型，实现后端 API 逻辑。",
-          "verify": {
-            "build": "echo '构建检查'",
-            "test": "echo '单元测试'"
-          },
-          "max_retries": 2
-        },
-        {
-          "id": "frontend-dev",
-          "title": "前端页面开发",
-          "type": "develop",
-          "assign_role": "frontend",
-          "depends_on": ["arch-design"],
-          "description": "基于 {{arch-design}} 的接口定义和 UI 设计稿，实现前端页面和交互逻辑。",
-          "verify": {
-            "build": "echo '前端构建检查'",
-            "lint": "echo '代码规范检查'"
-          },
-          "max_retries": 2
-        }
-      ]
-    },
-    {
-      "name": "质量保障",
-      "parallel": true,
-      "tasks": [
-        {
-          "id": "code-test",
-          "title": "集成测试与端到端测试",
-          "type": "test",
-          "assign_role": "tester",
-          "depends_on": ["backend-dev", "frontend-dev"],
-          "description": "对 {{backend-dev}} 和 {{frontend-dev}} 的实现进行集成测试和端到端测试，覆盖所有验收标准中的场景。",
-          "verify": {
-            "test-report": "echo '测试报告生成'"
-          }
-        },
-        {
-          "id": "code-review",
-          "title": "代码审查",
+          "id": "release-check",
+          "title": "汇总结果并完成验收",
           "type": "review",
-          "assign_role": "reviewer",
-          "depends_on": ["backend-dev", "frontend-dev"],
-          "description": "审查 {{backend-dev}} 和 {{frontend-dev}} 的代码质量，检查是否符合项目规范和最佳实践。"
-        },
-        {
-          "id": "security-audit",
-          "title": "安全审计",
-          "type": "security",
-          "assign_role": "security",
-          "depends_on": ["backend-dev", "frontend-dev"],
-          "description": "对 {{backend-dev}} 和 {{frontend-dev}} 进行安全审计，覆盖 OWASP Top 10 和业务逻辑安全。"
-        }
-      ]
-    },
-    {
-      "name": "部署就绪",
-      "parallel": false,
-      "tasks": [
-        {
-          "id": "deploy-prep",
-          "title": "部署准备与上线清单",
-          "type": "develop",
-          "assign_role": "devops",
-          "depends_on": ["code-test", "code-review", "security-audit"],
-          "description": "基于 {{code-test}}、{{code-review}} 和 {{security-audit}} 的结果，准备部署配置、CI/CD pipeline 和上线清单。"
+          "description": "汇总前后端结果并形成最终验收：{{backend-feature}}\n\n{{frontend-feature}}",
+          "phase": "verify",
+          "phase_assignments": {
+            "research": "inspector",
+            "synthesize": "inspector",
+            "implement": "inspector",
+            "integrate": "integrator",
+            "verify": "inspector"
+          },
+          "expected_outputs": [
+            "最终验收结论",
+            "上线风险清单"
+          ],
+          "acceptance_criteria": [
+            "只在 verify 通过后完成",
+            "结论可直接对 human 汇报"
+          ],
+          "impact_scope": "read_only",
+          "execution_mode": "parallel",
+          "resource_keys": [],
+          "handoff_format": "markdown",
+          "depends_on": [
+            "backend-feature",
+            "frontend-feature"
+          ]
         }
       ]
     }

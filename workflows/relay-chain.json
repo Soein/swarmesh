@@ -1,46 +1,119 @@
 {
+  "schema_version": 2,
   "name": "链式接力流程",
-  "description": "数据库 → 后端 → 前端 的三级接力开发流程",
-  "version": "1.0",
+  "description": "数据库设计 → 后端实现 → 前端实现的串行示例。",
   "stages": [
     {
       "stage": 1,
       "name": "数据库设计",
-      "parallel": false,
+      "execution_mode": "serial",
       "tasks": [
         {
           "id": "db-schema",
-          "role": "database",
-          "template": "请设计数据库 Schema：{{requirement}}",
-          "timeout": 300
+          "title": "设计数据库 Schema",
+          "type": "design",
+          "description": "围绕需求设计数据库 Schema：{{requirement}}",
+          "phase": "implement",
+          "phase_assignments": {
+            "research": "database",
+            "synthesize": "database",
+            "implement": "database",
+            "integrate": "integrator",
+            "verify": "reviewer"
+          },
+          "expected_outputs": [
+            "Schema 设计",
+            "迁移说明",
+            "最终验收结论"
+          ],
+          "acceptance_criteria": [
+            "表结构可执行",
+            "verify 通过后才完成"
+          ],
+          "impact_scope": "write",
+          "execution_mode": "exclusive",
+          "resource_keys": [
+            "repo:database/schema"
+          ],
+          "handoff_format": "markdown"
         }
       ]
     },
     {
       "stage": 2,
       "name": "后端开发",
-      "parallel": false,
+      "execution_mode": "serial",
       "tasks": [
         {
           "id": "api-dev",
-          "role": "backend",
-          "depends_on": ["db-schema"],
-          "template": "基于以下数据库设计实现 REST API：\n\n{{db-schema}}",
-          "timeout": 600
+          "title": "实现后端 API",
+          "type": "develop",
+          "description": "基于以下数据库设计实现 API：{{db-schema}}",
+          "phase": "implement",
+          "phase_assignments": {
+            "research": "backend",
+            "synthesize": "backend",
+            "implement": "backend",
+            "integrate": "integrator",
+            "verify": "reviewer"
+          },
+          "expected_outputs": [
+            "接口代码",
+            "实现说明",
+            "最终验收结论"
+          ],
+          "acceptance_criteria": [
+            "依赖上游结果",
+            "verify 通过后才完成"
+          ],
+          "impact_scope": "write",
+          "execution_mode": "exclusive",
+          "resource_keys": [
+            "repo:backend/api"
+          ],
+          "handoff_format": "markdown",
+          "depends_on": [
+            "db-schema"
+          ]
         }
       ]
     },
     {
       "stage": 3,
       "name": "前端开发",
-      "parallel": false,
+      "execution_mode": "serial",
       "tasks": [
         {
           "id": "ui-dev",
-          "role": "frontend",
-          "depends_on": ["api-dev"],
-          "template": "调用以下 API 实现前端页面：\n\n{{api-dev}}",
-          "timeout": 600
+          "title": "实现前端页面",
+          "type": "develop",
+          "description": "基于以下 API 实现前端页面：{{api-dev}}",
+          "phase": "implement",
+          "phase_assignments": {
+            "research": "frontend",
+            "synthesize": "frontend",
+            "implement": "frontend",
+            "integrate": "integrator",
+            "verify": "reviewer"
+          },
+          "expected_outputs": [
+            "前端代码",
+            "交互说明",
+            "最终验收结论"
+          ],
+          "acceptance_criteria": [
+            "依赖上游结果",
+            "verify 通过后才完成"
+          ],
+          "impact_scope": "write",
+          "execution_mode": "exclusive",
+          "resource_keys": [
+            "repo:frontend/ui"
+          ],
+          "handoff_format": "markdown",
+          "depends_on": [
+            "api-dev"
+          ]
         }
       ]
     }

@@ -42,7 +42,7 @@ aliases: arch
 当 supervisor 需要技术支持时，或当你收到需要拆解的技术任务时：
 1. `swarm-msg.sh list-roles` 查看在线角色
 2. 从技术角度拆解任务，定义接口契约
-3. 使用 `swarm-msg.sh publish --assign` 派发给对应角色
+3. 使用 `swarm-msg.sh publish --contract` 派发给对应角色，并在 `phase_assignments` 中写明当前负责人、integrate 负责人和 verify 负责人
 4. 用 `swarm-msg.sh group-status` 跟踪进度
 
 ### 技术方案模板

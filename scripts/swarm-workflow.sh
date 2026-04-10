@@ -93,6 +93,8 @@ create_workflow_state() {
     local wf_file="$1"
     local requirement="$2"
     local wf_id="wf-$(date +%s)-$$-${RANDOM}"
+    local workflow_hash=""
+    workflow_hash=$(_sha256_file "$wf_file" 2>/dev/null || echo "")
 
     mkdir -p "$WF_STATE_DIR"
 
@@ -100,8 +102,10 @@ create_workflow_state() {
 
     cat > "$state_file" <<EOF
 {
+  "schema_version": 2,
   "id": "$wf_id",
   "workflow_file": "$wf_file",
+  "workflow_hash": "$workflow_hash",
   "requirement": $(echo "$requirement" | jq -Rs .),
   "status": "running",
   "started_at": "$(get_timestamp)",
@@ -140,6 +144,50 @@ save_task_result() {
         '.results[$tid] = $res' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
 }
 
+render_task_template() {
+    local wf_id="$1"
+    local task_json="$2"
+    local requirement="$3"
+
+    local template
+    template=$(echo "$task_json" | jq -r '.description // .template // ""')
+
+    local depends_on
+    depends_on=$(echo "$task_json" | jq -r '.depends_on // [] | .[]' 2>/dev/null)
+    if [[ -n "$depends_on" ]]; then
+        local state_file="${WF_STATE_DIR}/${wf_id}.json"
+        local dep_id dep_result
+        for dep_id in $depends_on; do
+            dep_result=$(jq -r --arg tid "$dep_id" '.results[$tid] // "（无结果）"' "$state_file")
+            template="${template//\{\{${dep_id}\}\}/$dep_result}"
+        done
+    fi
+
+    template="${template//\{\{requirement\}\}/$requirement}"
+    echo "$template"
+}
+
+wait_for_queue_task() {
+    local queue_task_id="$1"
+    local timeout_val="$2"
+    local waited=0
+
+    while [[ $waited -lt $timeout_val ]]; do
+        if [[ -f "$TASKS_DIR/completed/${queue_task_id}.json" ]]; then
+            jq -r '.result // .notification.result // ""' \
+                "$TASKS_DIR/completed/${queue_task_id}.json" 2>/dev/null
+            return 0
+        fi
+        if [[ -f "$TASKS_DIR/failed/${queue_task_id}.json" ]]; then
+            return 1
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+
+    return 1
+}
+
 # ============================================================================
 # 任务执行
 # ============================================================================
@@ -150,156 +198,83 @@ execute_task() {
     local task_json="$2"
     local requirement="$3"
 
-    local task_id role template timeout_val
+    local task_id role timeout_val
     task_id=$(echo "$task_json" | jq -r '.id')
-    role=$(echo "$task_json" | jq -r '.role')
-    template=$(echo "$task_json" | jq -r '.template // ""')
+    role=$(echo "$task_json" | jq -r '.role // .assign_role // ""')
     timeout_val=$(echo "$task_json" | jq -r ".timeout // $TASK_TIMEOUT")
 
-    # 获取依赖任务的结果，替换模板变量
-    local depends_on
-    depends_on=$(echo "$task_json" | jq -r '.depends_on // [] | .[]' 2>/dev/null)
+    local description
+    description=$(render_task_template "$wf_id" "$task_json" "$requirement")
+    [[ -n "$description" && "$description" != "null" ]] || description="请完成以下任务: $requirement"
 
-    local message="$template"
+    local verify_spec
+    verify_spec=$(echo "$task_json" | jq -c '.verify // null')
+    local contract_json
+    contract_json=$(echo "$task_json" | jq -ce --arg description "$description" '
+        if (.phase_assignments // null) == null then
+            error("workflow task 缺少 phase_assignments")
+        else
+            if (.phase_assignments.integrate // "") == "" then
+                error("workflow task 缺少 phase_assignments.integrate")
+            else
+            {
+                phase: (.phase // "research"),
+                phase_assignments: .phase_assignments,
+                inputs: (.inputs // [$description]),
+                expected_outputs: (.expected_outputs // error("workflow task 缺少 expected_outputs")),
+                acceptance_criteria: (.acceptance_criteria // error("workflow task 缺少 acceptance_criteria")),
+                impact_scope: (.impact_scope // "read_only"),
+                execution_mode: (.execution_mode // "parallel"),
+                resource_keys: (.resource_keys // []),
+                handoff_format: (.handoff_format // "markdown")
+            }
+            end
+        end
+    ')
 
-    # 替换 {{task-id}} 模板变量为实际结果
-    if [[ -n "$depends_on" ]]; then
-        local state_file="${WF_STATE_DIR}/${wf_id}.json"
-        for dep_id in $depends_on; do
-            local dep_result
-            dep_result=$(jq -r --arg tid "$dep_id" '.results[$tid] // "（无结果）"' "$state_file")
-            message="${message//\{\{${dep_id}\}\}/$dep_result}"
-        done
-    fi
-
-    # 替换 {{requirement}} 变量
-    message="${message//\{\{requirement\}\}/$requirement}"
-
-    # 如果没有模板，使用默认消息
-    if [[ -z "$message" ]] || [[ "$message" == "null" ]]; then
-        message="请完成以下任务: $requirement"
-    fi
-
-    # 从 task_json 读取可选的 verify 和 max_retries
-    local verify_spec max_retries
-    verify_spec=$(echo "$task_json" | jq -r '.verify // empty')
-    max_retries=$(echo "$task_json" | jq -r '.max_retries // 1')
-
-    info "执行任务 [$task_id] → 角色: $role (max_retries=$max_retries)"
+    info "执行任务 [$task_id] → 角色: ${role:-workflow-contract}"
 
     if [[ "$DRY_RUN" == "true" ]]; then
-        info "[DRY-RUN] 将发送给 $role: ${message:0:80}..."
+        info "[DRY-RUN] 将发布任务: ${description:0:80}..."
         update_task_state "$wf_id" "$task_id" "dry-run"
         return 0
     fi
 
-    # 辅助: 清理本轮发送产生的 processing 任务（防止重试时产生重复）
-    _cleanup_send_task() {
-        local stid="$1"
-        [[ -n "$stid" ]] || return 0
-        local f="$TASKS_DIR/processing/$stid.json"
-        [[ -f "$f" ]] || return 0
-        mkdir -p "$TASKS_DIR/failed"
-        local tmp="${f}.tmp"
-        if jq --arg at "$(get_timestamp)" --arg wf "$wf_id" \
-            '.status = "failed" | .fail_reason = "workflow retry cleanup: " + $wf | .failed_at = $at' \
-            "$f" > "$tmp" 2>/dev/null; then
-            mv "$tmp" "$TASKS_DIR/failed/$stid.json" 2>/dev/null
-            rm -f "$f"
-        else
-            rm -f "$tmp"
-        fi
+    local title type priority group_id depends_csv branch queue_task_id publish_output
+    title=$(echo "$task_json" | jq -r '.title // .id')
+    type=$(echo "$task_json" | jq -r '.type // "orchestrate"')
+    priority=$(echo "$task_json" | jq -r '.priority // "normal"')
+    group_id=$(echo "$task_json" | jq -r '.group_id // ""')
+    branch=$(echo "$task_json" | jq -r '.branch // ""')
+    depends_csv=$(echo "$task_json" | jq -r '.depends_on // [] | join(",")')
+
+    update_task_state "$wf_id" "$task_id" "processing"
+    local -a publish_args=(
+        publish "$type" "$title"
+        --description "$description"
+        --priority "$priority"
+        --contract "$contract_json"
+    )
+    [[ -n "$group_id" ]] && publish_args+=(--group "$group_id")
+    [[ -n "$depends_csv" ]] && publish_args+=(--depends "$depends_csv")
+    [[ -n "$branch" ]] && publish_args+=(--branch "$branch")
+    if [[ "$verify_spec" != "null" ]]; then
+        publish_args+=(--verify "$verify_spec")
+    fi
+    publish_output=$(SWARM_INSTANCE=workflow SWARM_ROLE=workflow \
+        "$SCRIPTS_DIR/swarm-msg.sh" "${publish_args[@]}" 2>/dev/null)
+    queue_task_id=$(echo "$publish_output" | tail -n 1)
+    [[ -n "$queue_task_id" ]] || {
+        update_task_state "$wf_id" "$task_id" "failed"
+        return 1
     }
 
-    local attempt=0
-    local cur_send_task_id=""
-    while [[ $attempt -lt $max_retries ]]; do
-        ((attempt++))
-        [[ $attempt -gt 1 ]] && {
-            # 清理上一轮的 processing 任务
-            _cleanup_send_task "$cur_send_task_id"
-            cur_send_task_id=""
-            warn "重试 [$task_id] 第 $attempt 次..."
-            sleep $((attempt * 30))
-        }
+    if result=$(wait_for_queue_task "$queue_task_id" "$timeout_val"); then
+        save_task_result "$wf_id" "$task_id" "$result"
+        update_task_state "$wf_id" "$task_id" "completed"
+        return 0
+    fi
 
-        # 发送任务，捕获 stdout 以提取 task_id（避免 events.log grep 竞态）
-        update_task_state "$wf_id" "$task_id" "processing"
-        local send_output
-        send_output=$("$SCRIPTS_DIR/swarm-send.sh" "$role" "$message" 2>/dev/null) || true
-
-        # 从 swarm-send.sh 的 stdout 中提取 "任务 ID:    task-xxx"
-        cur_send_task_id=$(echo "$send_output" | grep -oE 'task-[0-9]+-[0-9]+-[0-9]+' | head -1)
-
-        # 等待完成（事件驱动，零轮询）
-        info "等待 $role 完成 [$task_id]..."
-        if "$SCRIPTS_DIR/swarm-events.sh" --wait task.completed \
-                --role "$role" --timeout "$timeout_val" > /dev/null 2>&1; then
-            success "任务 [$task_id] 完成 (第 $attempt 次尝试)"
-
-            # 捕获结果（优先从日志精确提取，无截断）
-            local log_file log_offset result
-            log_file=$(jq -r --arg q "$role" '
-                (.panes[] | select(.instance == $q) | .log) //
-                (.panes[] | select(.role == $q) | .log) //
-                empty
-            ' "$STATE_FILE" | head -1)
-
-            # 从 task.sent 事件获取偏移量
-            log_offset=$(grep "\"task.sent\"" "$EVENTS_LOG" 2>/dev/null \
-                | grep "\"role\":\"$role\"" \
-                | tail -1 \
-                | jq -r '.data.log_offset // "0"')
-
-            if [[ "$log_offset" != "0" ]] && [[ -f "$log_file" ]]; then
-                result=$(tail -c "+$((log_offset + 1))" "$log_file" 2>/dev/null \
-                    | sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g' \
-                    | grep -vE '^\s*$|^❯|^>|^›|Type your message')
-            else
-                # 回退到 pane 截屏
-                local pane_info
-                pane_info=$(jq -r --arg q "$role" '
-                    (.panes[] | select(.instance == $q) | .pane) //
-                    (.panes[] | select(.role == $q) | .pane) //
-                    empty
-                ' "$STATE_FILE" | head -1)
-                result=$(tmux capture-pane -t "${SESSION_NAME}:${pane_info}" -p -S -50 2>/dev/null \
-                    | sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g' \
-                    | grep -vE '^\s*$|^❯|^>|^›|Type your message' \
-                    | tail -30)
-            fi
-
-            # 可选质量门（verify 字段非空时执行）
-            if [[ -n "$verify_spec" ]] && type _run_quality_gate &>/dev/null; then
-                if [[ -n "$cur_send_task_id" ]]; then
-                    local task_file="$TASKS_DIR/processing/$cur_send_task_id.json"
-                    if [[ -f "$task_file" ]]; then
-                        # 注入 verify 字段供质量门读取
-                        local verify_json
-                        verify_json=$(echo "$task_json" | jq -c '.verify')
-                        jq --argjson v "$verify_json" '.verify = $v' "$task_file" > "${task_file}.tmp" \
-                            && mv "${task_file}.tmp" "$task_file"
-                        if ! _run_quality_gate "$cur_send_task_id" "$role"; then
-                            warn "[$task_id] 质量门未通过"
-                            continue  # 重试（循环头部会清理 cur_send_task_id）
-                        fi
-                    fi
-                fi
-            fi
-
-            save_task_result "$wf_id" "$task_id" "$result"
-            update_task_state "$wf_id" "$task_id" "completed"
-            return 0
-        else
-            warn "任务 [$task_id] 第 $attempt 次尝试超时"
-            continue  # 重试（循环头部会清理 cur_send_task_id）
-        fi
-    done
-
-    # 清理最后一轮的 processing 任务
-    _cleanup_send_task "$cur_send_task_id"
-
-    warn "任务 [$task_id] 重试 $max_retries 次后仍失败"
     update_task_state "$wf_id" "$task_id" "failed"
     return 1
 }
@@ -313,10 +288,10 @@ execute_stage() {
     local stage_json="$2"
     local requirement="$3"
 
-    local stage_num stage_name parallel
-    stage_num=$(echo "$stage_json" | jq -r '.stage')
+    local stage_num stage_name execution_mode
+    stage_num=$(echo "$stage_json" | jq -r '.stage // 0')
     stage_name=$(echo "$stage_json" | jq -r '.name')
-    parallel=$(echo "$stage_json" | jq -r '.parallel // false')
+    execution_mode=$(echo "$stage_json" | jq -r '.execution_mode // "serial"')
 
     stage "阶段 $stage_num: $stage_name"
 
@@ -326,7 +301,7 @@ execute_stage() {
     local tasks_count
     tasks_count=$(echo "$stage_json" | jq '.tasks | length')
 
-    if [[ "$parallel" == "true" ]] && [[ $tasks_count -gt 1 ]]; then
+    if [[ "$execution_mode" == "parallel" ]] && [[ $tasks_count -gt 1 ]]; then
         # 并行执行
         info "并行执行 $tasks_count 个任务..."
 
@@ -391,6 +366,10 @@ run_workflow() {
 
     local wf_json
     wf_json=$(cat "$wf_file")
+
+    local schema_version
+    schema_version=$(echo "$wf_json" | jq -r '.schema_version // ""')
+    [[ "$schema_version" == "2" ]] || die "workflow schema_version 必须为 2"
 
     local wf_name
     wf_name=$(echo "$wf_json" | jq -r '.name')
@@ -541,7 +520,9 @@ main() {
     [[ -n "$wf_file" ]] || { show_help; exit 1; }
     [[ -n "$requirement" ]] || die "请提供需求描述"
 
-    tmux has-session -t "$SESSION_NAME" 2>/dev/null || die "蜂群未启动"
+    if [[ "$DRY_RUN" != "true" ]]; then
+        tmux has-session -t "$SESSION_NAME" 2>/dev/null || die "蜂群未启动"
+    fi
 
     run_workflow "$wf_file" "$requirement"
 }

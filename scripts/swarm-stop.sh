@@ -40,6 +40,7 @@ readonly ARCHIVE_DATE_FORMAT="%Y%m%d_%H%M%S"
 FORCE_STOP=false
 KEEP_LOGS=false
 CLEAN_ALL=false
+readonly RESUME_SCHEMA_VERSION=2
 
 # 显示帮助信息
 show_help() {
@@ -128,6 +129,53 @@ format_duration() {
     result="${result}${seconds}秒"
 
     echo "$result"
+}
+
+build_resume_snapshot() {
+    local state_file="${1:-$STATE_FILE}"
+    [[ -f "$state_file" ]] || return 1
+
+    local profile_name profile_file profile_hash
+    profile_name=$(jq -r '.profile // ""' "$state_file" 2>/dev/null)
+    profile_file="${CONFIG_DIR}/profiles/${profile_name}.json"
+    profile_hash=""
+    [[ -f "$profile_file" ]] && profile_hash=$(_sha256_file "$profile_file")
+
+    local role_prompt_hashes='{}'
+    while IFS= read -r config_rel; do
+        [[ -z "$config_rel" || "$config_rel" == "null" ]] && continue
+        local role_file role_hash
+        role_file="${CONFIG_DIR}/roles/${config_rel}"
+        role_hash=""
+        [[ -f "$role_file" ]] && role_hash=$(_sha256_file "$role_file")
+        role_prompt_hashes=$(jq -c --arg key "$config_rel" --arg value "$role_hash" \
+            '. + {($key): $value}' <<<"$role_prompt_hashes")
+    done < <(jq -r '.panes[].config // empty' "$state_file" 2>/dev/null | sort -u)
+
+    local permission_hashes='{}'
+    while IFS= read -r pane_json; do
+        [[ -z "$pane_json" ]] && continue
+        local instance perms_json perm_hash
+        instance=$(jq -r '.instance' <<<"$pane_json")
+        perms_json=$(jq -c '.permissions // {}' <<<"$pane_json")
+        perm_hash=$(_sha256_string "$perms_json")
+        permission_hashes=$(jq -c --arg key "$instance" --arg value "$perm_hash" \
+            '. + {($key): $value}' <<<"$permission_hashes")
+    done < <(jq -c '.panes[]' "$state_file" 2>/dev/null)
+
+    jq -nc \
+        --argjson schema_version "$RESUME_SCHEMA_VERSION" \
+        --arg profile_hash "$profile_hash" \
+        --arg workflow_hash "" \
+        --argjson role_prompt_hashes "$role_prompt_hashes" \
+        --argjson permission_snapshot_hashes "$permission_hashes" \
+        '{
+            schema_version: $schema_version,
+            profile_hash: $profile_hash,
+            workflow_hash: $workflow_hash,
+            role_prompt_hashes: $role_prompt_hashes,
+            permission_snapshot_hashes: $permission_snapshot_hashes
+        }'
 }
 
 # 统计任务数量
@@ -275,6 +323,11 @@ EOF
             | jq -R -s 'split("\n") | map(select(length > 0))')
     fi
 
+    local resume_snapshot='{}'
+    if [[ -f "$STATE_FILE" ]]; then
+        resume_snapshot=$(build_resume_snapshot "$STATE_FILE" 2>/dev/null || echo '{}')
+    fi
+
     # 合并停止信息到已有状态（保留 panes、project 等启动信息）
     if [[ -f "$STATE_FILE" ]]; then
         jq \
@@ -283,14 +336,18 @@ EOF
             --argjson completed "${completed_tasks:-0}" \
             --argjson pending "${pending_tasks:-0}" \
             --argjson orphan_tasks "$processing_tasks" \
+            --argjson schema_version "$RESUME_SCHEMA_VERSION" \
+            --argjson snapshot "$resume_snapshot" \
             '. + {
+                schema_version: $schema_version,
                 stop_time: $stop_time,
                 duration_seconds: $duration,
                 tasks: { completed: $completed, pending: $pending },
                 status: "stopped",
                 resume: {
                     orphan_tasks: $orphan_tasks,
-                    resumable: true
+                    resumable: true,
+                    snapshot: $snapshot
                 }
             }' "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE" \
             || log_warn "状态合并失败，保留原始状态文件"

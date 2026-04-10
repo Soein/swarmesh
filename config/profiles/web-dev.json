@@ -1,6 +1,6 @@
 {
   "name": "Web 开发团队",
-  "description": "完整的 Web 开发团队 - 6 个核心角色",
+  "description": "完整的 Web 开发团队 - 7 个核心角色",
   "version": "1.0.0",
   "created": "2026-02-12",
   "roles": [
@@ -57,6 +57,15 @@
       "alias": "review,rv,reviewer,5",
       "title": "🔍 代码审查员",
       "description": "代码质量审查专家"
+    },
+    {
+      "name": "integrator",
+      "cli": "codex chat",
+      "config": "quality/integrator.md",
+      "category": "quality",
+      "alias": "merge,intg,integrator,6",
+      "title": "🧩 集成员",
+      "description": "后置集成专家"
     }
   ],
   "config": {
@@ -78,7 +87,7 @@
     ],
     "team_composition": {
       "core_dev": ["frontend", "backend", "database", "devops"],
-      "quality": ["tester", "reviewer"]
+      "quality": ["tester", "reviewer", "integrator"]
     }
   }
 }

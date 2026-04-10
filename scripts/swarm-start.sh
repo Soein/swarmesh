@@ -27,6 +27,79 @@ PROFILES_DIR="${PROFILES_DIR:-$CONFIG_DIR/profiles}"
 
 # CLI 启动等待时间（秒）
 CLI_STARTUP_WAIT="${CLI_STARTUP_WAIT:-3}"
+readonly RESUME_SCHEMA_VERSION=2
+
+build_resume_snapshot() {
+    local state_file="${1:-$STATE_FILE}"
+    [[ -f "$state_file" ]] || return 1
+
+    local profile_name profile_file profile_hash
+    profile_name=$(jq -r '.profile // ""' "$state_file" 2>/dev/null)
+    profile_file="${CONFIG_DIR}/profiles/${profile_name}.json"
+    profile_hash=""
+    [[ -f "$profile_file" ]] && profile_hash=$(_sha256_file "$profile_file")
+
+    local role_prompt_hashes='{}'
+    while IFS= read -r config_rel; do
+        [[ -z "$config_rel" || "$config_rel" == "null" ]] && continue
+        local role_file role_hash
+        role_file="${CONFIG_DIR}/roles/${config_rel}"
+        role_hash=""
+        [[ -f "$role_file" ]] && role_hash=$(_sha256_file "$role_file")
+        role_prompt_hashes=$(jq -c --arg key "$config_rel" --arg value "$role_hash" \
+            '. + {($key): $value}' <<<"$role_prompt_hashes")
+    done < <(jq -r '.panes[].config // empty' "$state_file" 2>/dev/null | sort -u)
+
+    local permission_hashes='{}'
+    while IFS= read -r pane_json; do
+        [[ -z "$pane_json" ]] && continue
+        local instance perms_json perm_hash
+        instance=$(jq -r '.instance' <<<"$pane_json")
+        perms_json=$(jq -c '.permissions // {}' <<<"$pane_json")
+        perm_hash=$(_sha256_string "$perms_json")
+        permission_hashes=$(jq -c --arg key "$instance" --arg value "$perm_hash" \
+            '. + {($key): $value}' <<<"$permission_hashes")
+    done < <(jq -c '.panes[]' "$state_file" 2>/dev/null)
+
+    jq -nc \
+        --argjson schema_version "$RESUME_SCHEMA_VERSION" \
+        --arg profile_hash "$profile_hash" \
+        --arg workflow_hash "" \
+        --argjson role_prompt_hashes "$role_prompt_hashes" \
+        --argjson permission_snapshot_hashes "$permission_hashes" \
+        '{
+            schema_version: $schema_version,
+            profile_hash: $profile_hash,
+            workflow_hash: $workflow_hash,
+            role_prompt_hashes: $role_prompt_hashes,
+            permission_snapshot_hashes: $permission_snapshot_hashes
+        }'
+}
+
+validate_resume_snapshot() {
+    local state_file="${1:-$STATE_FILE}"
+    [[ -f "$state_file" ]] || die "resume snapshot 校验失败: state.json 不存在"
+
+    local snapshot
+    snapshot=$(jq -c '.resume.snapshot // empty' "$state_file" 2>/dev/null)
+    [[ -n "$snapshot" && "$snapshot" != "null" ]] \
+        || die "resume snapshot 缺失，无法恢复当前会话"
+
+    local snapshot_schema
+    snapshot_schema=$(jq -r '.schema_version // ""' <<<"$snapshot")
+    [[ "$snapshot_schema" == "$RESUME_SCHEMA_VERSION" ]] \
+        || die "resume snapshot schema_version 不匹配: state=$snapshot_schema current=$RESUME_SCHEMA_VERSION"
+
+    local current_snapshot
+    current_snapshot=$(build_resume_snapshot "$state_file")
+    jq -e --argjson current "$current_snapshot" '
+        (.profile_hash // "") == ($current.profile_hash // "")
+        and (.workflow_hash // "") == ($current.workflow_hash // "")
+        and (.role_prompt_hashes // {}) == ($current.role_prompt_hashes // {})
+        and (.permission_snapshot_hashes // {}) == ($current.permission_snapshot_hashes // {})
+    ' <<<"$snapshot" >/dev/null 2>&1 \
+        || die "resume snapshot 校验失败: profile/role/permission 快照已变化"
+}
 
 # =============================================================================
 # 参数解析
@@ -105,6 +178,8 @@ resume_swarm() {
     if [[ "$status" != "stopped" || "$resumable" != "true" ]]; then
         die "会话状态不可恢复 (status=$status, resumable=$resumable)"
     fi
+
+    validate_resume_snapshot "$STATE_FILE"
 
     log_info "检测到可恢复的会话，开始实例级恢复..."
 
@@ -371,6 +446,7 @@ resume_swarm() {
     PANES_JSON=$(printf '%s\n' "${PANE_MAPPINGS[@]}" | jq -s '.')
 
     jq -n \
+        --argjson schema_version "$RESUME_SCHEMA_VERSION" \
         --arg session "$SESSION_NAME" \
         --arg profile "$r_profile" \
         --arg project "$r_project" \
@@ -384,6 +460,7 @@ resume_swarm() {
         --argjson watchdog_pid "$WATCHDOG_PID" \
         --argjson panes "$PANES_JSON" \
         '{
+            schema_version: $schema_version,
             session: $session,
             profile: $profile,
             project: $project,
@@ -580,6 +657,14 @@ if [[ "$NEED_SUP" -gt 0 ]]; then
         SUPERVISOR_ENTRY='{"name":"supervisor","cli":"claude chat","config":"management/supervisor.md","category":"management","alias":"sup,supervisor","title":"编排者","description":"蜂群编排者，负责任务拆解、角色调度和进度监控"}'
         ROLES_JSON=$(echo "$ROLES_JSON" | jq --argjson sup "$SUPERVISOR_ENTRY" '. + [$sup]')
     done
+fi
+
+# 自动注入 integrator（集成员）——后置合并与结果收敛
+HAS_INTEGRATOR=$(echo "$ROLES_JSON" | jq '[.[] | select(.name == "integrator")] | length')
+if [[ "$HAS_INTEGRATOR" -eq 0 ]]; then
+    log_info "自动注入 integrator 角色（集成员）"
+    INTEGRATOR_ENTRY='{"name":"integrator","cli":"codex chat","config":"quality/integrator.md","category":"quality","alias":"merge,intg,integrator","title":"集成员","description":"集成员，负责后置合并、冲突收敛和集成摘要输出"}'
+    ROLES_JSON=$(echo "$ROLES_JSON" | jq --argjson integrator "$INTEGRATOR_ENTRY" '. + [$integrator]')
 fi
 
 # 自动注入 inspector（督查员）——质量门守护者，必须存在
@@ -787,6 +872,7 @@ log_info "保存运行状态到 $STATE_FILE"
 PANES_JSON=$(printf '%s\n' "${PANE_MAPPINGS[@]}" | jq -s '.')
 
 STATE_JSON=$(jq -n \
+    --argjson schema_version "$RESUME_SCHEMA_VERSION" \
     --arg session "$SESSION_NAME" \
     --arg profile "$PROFILE" \
     --arg project "$PROJECT_DIR" \
@@ -799,6 +885,7 @@ STATE_JSON=$(jq -n \
     --argjson watchdog_pid "$WATCHDOG_PID" \
     --argjson panes "$PANES_JSON" \
     '{
+        schema_version: $schema_version,
         session: $session,
         profile: $profile,
         project: $project,

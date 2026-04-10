@@ -363,10 +363,40 @@ cmd_task() {
         if [[ -z "$content" ]]; then
             die "缺少任务内容"
         fi
+        local contract_json
+        contract_json=$(jq -nc --arg content "$content" '{
+            phase: "research",
+            phase_assignments: {
+                research: "supervisor",
+                synthesize: "supervisor",
+                implement: "supervisor",
+                integrate: "integrator",
+                verify: "inspector"
+            },
+            inputs: [$content],
+            expected_outputs: [
+                "事实清单",
+                "可执行 spec",
+                "实现与集成摘要",
+                "最终验收结论"
+            ],
+            acceptance_criteria: [
+                "research 只能产出事实",
+                "synthesize 必须转成可执行 spec",
+                "implement 完成后必须进入 integrate",
+                "integrate 完成后才能进入 verify",
+                "只有整体任务完成后才允许向 human 汇报"
+            ],
+            impact_scope: "read_only",
+            execution_mode: "parallel",
+            resource_keys: [],
+            handoff_format: "markdown"
+        }')
         log_info "发布编排任务到队列: $content"
-        "$SCRIPTS_DIR/swarm-msg.sh" publish orchestrate "$content" \
-            --assign supervisor \
-            --priority high
+        SWARM_INSTANCE=human SWARM_ROLE=human \
+            "$SCRIPTS_DIR/swarm-msg.sh" publish orchestrate "$content" \
+                --priority high \
+                --contract "$contract_json"
     fi
 
     if $no_wait; then
