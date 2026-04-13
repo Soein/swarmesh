@@ -1,0 +1,13 @@
+{
+  "name": "tmux-swarm-marketplace",
+  "owner": {
+    "name": "pzy"
+  },
+  "plugins": [
+    {
+      "name": "tmux-swarm",
+      "source": ".",
+      "description": "Multi-CLI swarm in tmux with discuss and execute modes."
+    }
+  ]
+}

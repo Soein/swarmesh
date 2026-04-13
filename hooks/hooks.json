@@ -1,0 +1,8 @@
+{
+  "SessionStart": [
+    {
+      "type": "command",
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/check-deps.sh --quiet"
+    }
+  ]
+}

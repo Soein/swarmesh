@@ -1,6 +1,100 @@
 # Swarmesh
 
-[English](#english) | [中文](#中文)
+[English](#english) | [中文](#中文) | [🔌 Claude Code 插件安装](#-claude-code-插件安装)
+
+---
+
+## 🔌 Claude Code 插件安装
+
+Swarmesh 现在可作为 **Claude Code 插件**使用，提供两种协作模式：
+
+| 模式 | 何时用 | 启动命令 |
+|---|---|---|
+| **discuss** | 想和多个 CLI（Codex / Claude / Gemini）圆桌讨论、碰方案。v0.2 起 CLI 回答自动流转 | `/swarm-chat <项目> <cli>` |
+| **vote** | 想对多个 CLI 做"独立判断、互不可见"的投票（对标 pal consensus） | `/swarm-vote "<问题>"` |
+| **execute** | 方案已定，要由 supervisor 拆任务派发给全角色团队 | `/swarm-start <项目> [profile]` |
+
+### 安装
+
+```bash
+# 在 Claude Code 中：
+/plugin marketplace add <你的 GitHub 用户>/tmux-swarm
+/plugin install tmux-swarm
+```
+
+或本地测试：
+
+```bash
+claude --plugin-dir ~/项目/tmux并行
+```
+
+### discuss 模式速览
+
+```bash
+/swarm-chat ~/my-app codex cx          # 首发 Codex
+/swarm-chat-add claude "claude"        # 再加 Claude
+/swarm-chat-msg "@cx @claude 讨论 Redis vs Dynamo 做会话缓存"
+/swarm-chat-msg "@cx 基于上面对比，结论是？"
+/swarm-promote --profile minimal       # 讨论成熟后转 execute 落地
+```
+
+关键规则：
+- 只有 `@点名` 才触发对方接话（防刷屏）
+- 默认最大轮次 20（`SWARM_DISCUSS_MAX_TURNS` 调整）
+- 每次喂给 CLI 的上下文 = 最近 10 轮对话（`SWARM_DISCUSS_CONTEXT_TURNS` 调整）
+- **v0.2 新增**：pane 输出监听器后台自动运行，CLI 答完会自动推回 jsonl 并继续派发链路；降级 `SWARM_DISCUSS_AUTO_WATCH=0`
+- **v0.2 新增**：Codex 首次进新目录的 trust 提示自动接受（`DISCUSS_CODEX_TRUST_AUTO=1`）
+- 防回环：`@ 自己` 自动跳过
+
+### vote 模式（v0.2 新增）
+
+```bash
+/swarm-chat ~/app codex cx
+/swarm-chat-add cl "claude"
+/swarm-chat-add gm "gemini"
+/swarm-vote "Redis vs DynamoDB 做会话缓存？"
+# ... 等 30-60 秒 ...
+# 根据返回的 vote_id 手动收集 + 出报告（slash 流程里会自动调用）
+```
+
+三个 CLI 收到同一个问题**独立作答、互不可见**，避免讨论模式的羊群效应。
+
+### execute 模式速览
+
+```bash
+/swarm-start ~/my-app minimal    # 起 4 角色团队
+/swarm-task "实现用户注册系统"    # 派发给 supervisor，自动拆解
+/swarm-status                    # 观察进度
+/swarm-stop                      # 结束
+```
+
+### 平台支持
+
+- ✅ macOS / Linux
+- ❌ Windows 原生（需 WSL）
+
+### Slash Commands
+
+| 命令 | 模式 | 作用 |
+|---|---|---|
+| `/swarm-start` | execute | 启动蜂群 |
+| `/swarm-task` | execute | 派发任务 |
+| `/swarm-join` / `/swarm-leave` | execute | 动态增删角色 |
+| `/swarm-chat` | discuss | 启动圆桌 |
+| `/swarm-chat-add` | discuss | 加参与者 |
+| `/swarm-chat-msg` | discuss | 发消息（@点名，v0.2 自动流转） |
+| `/swarm-vote` | discuss | **v0.2** 隔离投票（对标 pal consensus） |
+| `/swarm-promote` | discuss→execute | 结案转落地 |
+| `/swarm-status` | 通用 | 查看状态 |
+| `/swarm-stop` | 通用 | 停止 |
+
+### 依赖检测
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/scripts/check-deps.sh
+```
+
+SessionStart hook 会自动检测；缺依赖时打印安装建议但不阻塞会话。
 
 ---
 

@@ -110,6 +110,9 @@ HIDDEN=false
 PROJECT_DIR=""
 MAX_CLI=0  # 0=不限制
 RESUME=false
+MODE="execute"          # execute（supervisor 编排）或 discuss（圆桌讨论）
+DISCUSS_CLI=""          # discuss 模式首发 CLI，例如 "codex chat"
+DISCUSS_NAME=""         # discuss 模式首发参与者名字，默认取 CLI 首个词
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -121,6 +124,9 @@ while [[ $# -gt 0 ]]; do
         --cli-wait)          CLI_STARTUP_WAIT="$2"; shift 2 ;;
         --max-cli)           MAX_CLI="$2"; shift 2 ;;
         --resume|-r)         RESUME=true; shift ;;
+        --mode)              MODE="$2"; shift 2 ;;
+        --cli)               DISCUSS_CLI="$2"; shift 2 ;;
+        --name)              DISCUSS_NAME="$2"; shift 2 ;;
         -h|--help)
             cat <<EOF
 用法: $(basename "$0") --project <项目路径> [选项]
@@ -158,6 +164,30 @@ EOF
             ;;
     esac
 done
+
+# =============================================================================
+# 模式校验与分流
+# =============================================================================
+case "$MODE" in
+    execute|discuss) ;;
+    *) die "未知 --mode: $MODE (仅支持 execute / discuss)" ;;
+esac
+export SWARM_MODE="$MODE"
+
+# discuss 模式：委托 discuss-relay.sh，不走 supervisor 编排
+if [[ "$MODE" == "discuss" ]]; then
+    [[ -n "$PROJECT_DIR" ]] || die "请指定项目目录 (--project <路径>)"
+    [[ -n "$DISCUSS_CLI" ]] || die "discuss 模式需要 --cli <cmd>，例如 --cli \"codex chat\""
+
+    RELAY="${SCRIPT_DIR}/lib/discuss-relay.sh"
+    [[ -x "$RELAY" ]] || die "找不到 discuss-relay.sh ($RELAY)，插件 discuss 模块未安装"
+
+    exec "$RELAY" start \
+        --project "$PROJECT_DIR" \
+        --cli "$DISCUSS_CLI" \
+        ${DISCUSS_NAME:+--name "$DISCUSS_NAME"} \
+        ${HIDDEN:+--hidden}
+fi
 
 # =============================================================================
 # 会话恢复
@@ -874,6 +904,7 @@ PANES_JSON=$(printf '%s\n' "${PANE_MAPPINGS[@]}" | jq -s '.')
 STATE_JSON=$(jq -n \
     --argjson schema_version "$RESUME_SCHEMA_VERSION" \
     --arg session "$SESSION_NAME" \
+    --arg mode "${SWARM_MODE:-execute}" \
     --arg profile "$PROFILE" \
     --arg project "$PROJECT_DIR" \
     --arg worktree_dir "$WORKTREE_DIR" \
@@ -887,6 +918,7 @@ STATE_JSON=$(jq -n \
     '{
         schema_version: $schema_version,
         session: $session,
+        mode: $mode,
         profile: $profile,
         project: $project,
         worktree_dir: $worktree_dir,

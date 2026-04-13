@@ -2,7 +2,8 @@
 # test-resource-locks.sh — 验证 exclusive 任务的 resource_keys 互斥
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$TEST_DIR/../scripts" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 export SWARM_ROOT="$ROOT_DIR"
 

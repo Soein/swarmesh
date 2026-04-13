@@ -2,7 +2,8 @@
 # test-safe-write.sh — 验证 safe_write 原子性与并发安全
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$TEST_DIR/../scripts" && pwd)"
 SWARM_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # shellcheck disable=SC1091
