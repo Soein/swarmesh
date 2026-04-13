@@ -1,7 +1,7 @@
 {
   "name": "tmux-swarm",
-  "version": "0.1.0",
-  "description": "Multi-CLI swarm in tmux: discuss with Codex/Claude/Gemini at a roundtable, or dispatch a full 15-role swarm via supervisor.",
+  "version": "0.2.0",
+  "description": "Multi-CLI swarm in tmux: auto roundtable discussion (Codex↔Claude↔Gemini with pane output watcher), isolated voting (consensus-style), or dispatch a full 15-role swarm via supervisor.",
   "author": {
     "name": "pzy"
   },

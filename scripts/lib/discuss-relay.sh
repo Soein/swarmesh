@@ -131,8 +131,35 @@ cmd_start() {
     info "   - jsonl: $DISCUSS_LOG"
     info "   - 下一步: /swarm-chat-add 加人, /swarm-chat-msg @$name <内容> 对话"
 
+    _maybe_start_watcher
+
     if [[ "$hidden" != "true" ]]; then
         info "(使用 --hidden 可跳过 attach 提示)"
+    fi
+}
+
+# 如果启用自动 watcher，后台拉起 discuss-watcher.sh
+_maybe_start_watcher() {
+    if [[ "${SWARM_DISCUSS_AUTO_WATCH:-1}" == "0" ]]; then
+        info "   - watcher: 禁用（SWARM_DISCUSS_AUTO_WATCH=0）"
+        return 0
+    fi
+
+    local watcher="$SCRIPTS_DIR/lib/discuss-watcher.sh"
+    [[ -x "$watcher" ]] || { info "   - watcher: 脚本缺失，跳过"; return 0; }
+
+    local pid_file="$DISCUSS_DIR/watcher.pid"
+    if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+        info "   - watcher: 已在跑 (pid $(cat "$pid_file"))"
+        return 0
+    fi
+
+    PROJECT_DIR="$PROJECT_DIR" nohup "$watcher" start >"$DISCUSS_DIR/watcher.log" 2>&1 &
+    sleep 1
+    if [[ -f "$pid_file" ]]; then
+        info "   - watcher: 已启动 (pid $(cat "$pid_file"), 日志 $DISCUSS_DIR/watcher.log)"
+    else
+        info "   - watcher: 启动失败，查看 $DISCUSS_DIR/watcher.log"
     fi
 }
 
@@ -181,6 +208,9 @@ cmd_add() {
         '{turn: 0, ts: $ts, type: "participant_join", name: $n, cli: $c}')" >> "$DISCUSS_LOG"
 
     info "✅ 加入 $name ($cli) @ pane $pane_target"
+
+    # 新参与者加入后，确保 watcher 在跑（可能 start 时没启动）
+    _maybe_start_watcher
 }
 
 # ---- post ----------------------------------------------------------------
@@ -236,6 +266,11 @@ cmd_post() {
     # 对每个被点名者推送上下文
     local participant_name pane cli_type
     for m in $mentions; do
+        # 防回环：@ 自己不触发
+        if [[ "$m" == "$from" ]]; then
+            info "⏭  @$m 是发送者自身，跳过（防回环）"
+            continue
+        fi
         participant_name=$(jq -r --arg n "$m" '.discuss.participants[] | select(.name==$n) | .name' "$STATE_FILE")
         if [[ -z "$participant_name" ]]; then
             info "⚠️  @$m 不在参与者列表，跳过"
@@ -335,11 +370,24 @@ cmd_stop() {
         esac
     done
     _locate_state_from_cwd 2>/dev/null || true
+
+    # 先停 watcher
+    local pid_file="${RUNTIME_DIR:-}/discuss/watcher.pid"
+    if [[ -n "${RUNTIME_DIR:-}" && -f "$pid_file" ]]; then
+        local wpid; wpid=$(cat "$pid_file" 2>/dev/null)
+        if [[ -n "$wpid" ]] && kill -0 "$wpid" 2>/dev/null; then
+            kill "$wpid" 2>/dev/null && info "已停 watcher (pid=$wpid)"
+        fi
+        rm -f "$pid_file" "${RUNTIME_DIR}/discuss/watcher.heartbeat"
+    fi
+
     tmux kill-session -t "$DISCUSS_SESSION_NAME" 2>/dev/null && info "已停止 $DISCUSS_SESSION_NAME"
     if [[ "$clean" == "true" && -n "${RUNTIME_DIR:-}" ]]; then
         rm -rf "${RUNTIME_DIR:?}/discuss"
         info "已清理 discuss 运行时数据"
     fi
+    # 防 tmux ls 等残留命令让脚本返回非零
+    return 0
 }
 
 # ---- helpers -------------------------------------------------------------
