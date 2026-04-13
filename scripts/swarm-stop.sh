@@ -329,8 +329,9 @@ EOF
     fi
 
     # 合并停止信息到已有状态（保留 panes、project 等启动信息）
+    # 走 safe_write --lock，与 state_json_update 的锁语义保持一致，避免和 watchdog/join/leave 写 state 并发竞态
     if [[ -f "$STATE_FILE" ]]; then
-        jq \
+        if ! jq \
             --arg stop_time "$stop_time" \
             --argjson duration "${duration_seconds:-0}" \
             --argjson completed "${completed_tasks:-0}" \
@@ -349,10 +350,11 @@ EOF
                     resumable: true,
                     snapshot: $snapshot
                 }
-            }' "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE" \
-            || log_warn "状态合并失败，保留原始状态文件"
+            }' "$STATE_FILE" | safe_write "$STATE_FILE" --lock; then
+            log_warn "状态合并失败，保留原始状态文件"
+        fi
     else
-        echo "$state_json" > "$STATE_FILE"
+        echo "$state_json" | safe_write "$STATE_FILE"
     fi
 
     log_success "状态已保存到: $STATE_FILE"

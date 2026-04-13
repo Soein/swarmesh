@@ -733,7 +733,7 @@ notify_all_roles() {
             --arg status "pending" \
             --arg priority "high" \
             '{id:$id, from:$from, to:$to, content:$content, timestamp:$timestamp, status:$status, reply_to:null, priority:$priority}' \
-            > "${MESSAGES_DIR}/inbox/${inst_name}/${notify_id}.json"
+            | safe_write "${MESSAGES_DIR}/inbox/${inst_name}/${notify_id}.json" --lock
 
         # 通道 2: paste-buffer 尽力即时推送（原子发送）
         local notify_tmp
@@ -799,7 +799,7 @@ _unified_notify() {
         --arg priority "$priority" \
         --arg category "$category" \
         '{id:$id, from:$from, to:$to, content:$content, timestamp:$timestamp, status:"pending", reply_to:null, priority:$priority, category:$category}' \
-        > "${MESSAGES_DIR}/inbox/${to}/${notify_id}.json" 2>/dev/null; then
+        | safe_write "${MESSAGES_DIR}/inbox/${to}/${notify_id}.json" --lock 2>/dev/null; then
         log_warn "[_unified_notify] inbox 写入失败: to=$to category=$category"
     fi
 
@@ -858,6 +858,39 @@ state_json_update() {
     ) 200>"$lock_file"
 
     rm -f "$tmp_file" 2>/dev/null || true
+}
+
+# =============================================================================
+# 通用原子写入 safe_write
+# =============================================================================
+
+# 从 stdin 读取内容，原子落盘到 target。
+# 用法:
+#   echo "$content" | safe_write "$path"          # 仅 tmp+mv 原子替换
+#   echo "$content" | safe_write "$path" --lock   # 叠加 flock 互斥，用于并发写同一目录/文件
+#
+# 统一所有 inbox / state 写入语义，避免"半写"和"后写覆盖前写"。
+safe_write() {
+    local target="$1"
+    local use_lock=false
+    if [[ "${2:-}" == "--lock" ]]; then
+        use_lock=true
+    fi
+
+    mkdir -p "$(dirname "$target")"
+    local tmp="${target}.tmp.$$.${RANDOM}"
+
+    if $use_lock; then
+        (
+            flock -x 200
+            cat > "$tmp" && mv "$tmp" "$target"
+        ) 200>"${target}.lock"
+    else
+        cat > "$tmp" && mv "$tmp" "$target"
+    fi
+
+    # 防御：若上一步失败，清理残留 tmp
+    [[ -f "$tmp" ]] && rm -f "$tmp" 2>/dev/null || true
 }
 
 # =============================================================================
@@ -962,10 +995,10 @@ if ! command -v flock &>/dev/null; then
         # 写入持锁进程 PID（$BASHPID 为 subshell 实际 PID，$$ 为父进程 PID）
         echo "${BASHPID:-$$}" > "$lock_dir/pid" 2>/dev/null
 
-        # subshell 退出自动释放（链式保留调用者已有的 EXIT trap）
-        local _prev_exit_trap
-        _prev_exit_trap=$(trap -p EXIT | sed "s/^trap -- '//;s/' EXIT$//")
-        trap "rm -f '$lock_dir/pid' 2>/dev/null; rmdir '$lock_dir' 2>/dev/null; ${_prev_exit_trap:-:}" EXIT
+        # subshell 退出自动释放锁。
+        # 注意：不要 "链式保留" 调用者 EXIT trap——bash 子 shell 默认不触发父级 EXIT trap，
+        # 显式复制会让父级清理（如 rm -rf test_tmpdir）在子 shell 退出时就被执行，污染父环境。
+        trap "rm -f '$lock_dir/pid' 2>/dev/null; rmdir '$lock_dir' 2>/dev/null; :" EXIT
 
         return 0
     }
@@ -1351,7 +1384,7 @@ _notify_supervisor_completion() {
             --arg content "[任务完成] 实例 ${instance} 已完成当前任务，可分配新工作。" \
             --arg timestamp "$(get_timestamp)" --arg status "pending" --arg priority "normal" \
             '{id:$id,from:$from,to:$to,content:$content,timestamp:$timestamp,status:$status,reply_to:null,priority:$priority}' \
-            > "${messages_dir}/inbox/${sup_inst}/${notify_id}.json"
+            | safe_write "${messages_dir}/inbox/${sup_inst}/${notify_id}.json" --lock
         # 通道 2: paste-buffer 即时推送
         local notify_tmp
         notify_tmp=$(mktemp "${RUNTIME_DIR}/.watcher-notify-XXXXXX")

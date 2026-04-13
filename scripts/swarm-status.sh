@@ -412,6 +412,64 @@ format_status() {
         ' <<<"$task_rows"
     fi
 
+    # 资源锁视图（exclusive 任务持有的 resource_keys）
+    local lock_file="$RUNTIME_DIR/resource_locks.json"
+    if [[ -f "$lock_file" ]] && [[ "$(jq 'length' "$lock_file" 2>/dev/null)" -gt 0 ]]; then
+        echo ""
+        if [[ "$use_color" == "true" ]]; then
+            echo -e "${COLOR_LABEL}🔒 资源锁:${COLOR_RESET}"
+        else
+            echo "资源锁:"
+        fi
+        local now_epoch
+        now_epoch=$(date +%s)
+        # 锁时间戳格式跟随 get_timestamp（LOG_TIMESTAMP_FORMAT，默认 "%Y-%m-%d %H:%M:%S"）。
+        # 用 strptime 解析；旧格式兼容 fromdateiso8601。
+        jq -r --argjson now "$now_epoch" '
+            def parse_ts(s):
+                if s == null or s == "" then 0
+                else
+                    (s | strptime("%Y-%m-%d %H:%M:%S") | mktime? // 0) as $a
+                    | if $a > 0 then $a
+                      else (s | fromdateiso8601? // 0)
+                      end
+                end;
+            to_entries
+            | map({
+                key: .key,
+                task_id: .value.task_id,
+                holder: (.value.holder // "?"),
+                acquired_at: (.value.acquired_at // ""),
+                age: ($now - parse_ts(.value.acquired_at))
+              })
+            | sort_by(.age)
+            | reverse
+            | .[]
+            | "  \(.key) → \(.task_id) (\(.holder), \(
+                if .age < 0 then "just now"
+                elif .age < 60 then "\(.age)s ago"
+                elif .age < 3600 then "\(.age / 60 | floor)m ago"
+                else "\(.age / 3600 | floor)h ago"
+                end
+              ))"
+        ' "$lock_file" 2>/dev/null || echo "  (资源锁表解析失败)"
+    fi
+
+    # 被资源阻塞的任务提示
+    local blocked_waiters
+    blocked_waiters=$(find "$TASKS_DIR/pending" -name '*.json' -type f 2>/dev/null \
+        | xargs -I {} jq -r 'select(.resource_blocked_by != null and .resource_blocked_by != "") | "  \(.id) 等待 \(.resource_blocked_by) 释放 | \(.title)"' {} 2>/dev/null \
+        | head -10)
+    if [[ -n "$blocked_waiters" ]]; then
+        echo ""
+        if [[ "$use_color" == "true" ]]; then
+            echo -e "${COLOR_LABEL}⏸  资源等待队列:${COLOR_RESET}"
+        else
+            echo "资源等待队列:"
+        fi
+        echo "$blocked_waiters"
+    fi
+
     echo ""
     if [[ "$use_color" == "true" ]]; then
         echo -e "${COLOR_SEPARATOR}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${COLOR_RESET}"
@@ -480,6 +538,13 @@ format_json() {
         roles_json="$temp_roles"
     fi
 
+    # 资源锁状态
+    local lock_file="$RUNTIME_DIR/resource_locks.json"
+    local resource_locks='{}'
+    if [[ -f "$lock_file" ]]; then
+        resource_locks=$(cat "$lock_file" 2>/dev/null || echo '{}')
+    fi
+
     # 构建完整 JSON
     jq -n \
         --arg status "$session_status" \
@@ -490,6 +555,7 @@ format_json() {
         --argjson blocked "$blocked_count" \
         --argjson completed "$completed_count" \
         --argjson task_rows "$task_rows" \
+        --argjson resource_locks "$resource_locks" \
         '{
             status: $status,
             uptime: $uptime,
@@ -500,7 +566,8 @@ format_json() {
                 blocked: $blocked,
                 completed: $completed
             },
-            task_rows: $task_rows
+            task_rows: $task_rows,
+            resource_locks: $resource_locks
         }'
 }
 

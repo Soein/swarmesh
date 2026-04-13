@@ -91,6 +91,8 @@ _watchdog_recover_task() {
         fi
         rm -f "$task_file"
         rm -f "$TASKS_DIR/processing/${tid}.op.lock" "$TASKS_DIR/processing/${tid}.compose.lock" 2>/dev/null
+        # 任务永久失败（终态），用 tolerant 释放以便锁表损坏时打标记
+        type _release_resources_tolerant &>/dev/null && _release_resources_tolerant "$tid"
 
         emit_event "task.exhausted" "" "task_id=$tid" "retry_count=$new_count" "max_retries=$max_retries" "reason=watchdog:$reason"
 
@@ -144,6 +146,8 @@ _watchdog_recover_task() {
         fi
         rm -f "$task_file"
         rm -f "$TASKS_DIR/processing/${tid}.op.lock" "$TASKS_DIR/processing/${tid}.compose.lock" 2>/dev/null
+        # 任务回 pending，原 claimed_by 可能离线，必须释放锁否则死锁
+        type _release_resources &>/dev/null && _release_resources "$tid"
 
         # 发射恢复事件（含 retry_count）
         emit_event "task.recovered.${reason}" "" "task_id=$tid" "original_claimer=$original_claimer" "retry_count=$new_count"
@@ -390,7 +394,7 @@ _watchdog_check_subtask_stall() {
                 --arg priority "high" \
                 --arg category "task.subtask_failed" \
                 '{id:$id, from:$from, to:$to, content:$content, timestamp:$timestamp, status:$status, reply_to:null, priority:$priority, category:$category}' \
-                > "${MESSAGES_DIR}/inbox/inspector/${notify_id}.json"
+                | safe_write "${MESSAGES_DIR}/inbox/inspector/${notify_id}.json" --lock
             log_info "[watchdog] 子任务失败告警: 父任务 $parent_id ($failed 个失败)"
             continue
         fi
@@ -425,7 +429,7 @@ _watchdog_check_subtask_stall() {
                     --arg priority "high" \
                     --arg category "task.subtask_stall" \
                     '{id:$id, from:$from, to:$to, content:$content, timestamp:$timestamp, status:$status, reply_to:null, priority:$priority, category:$category}' \
-                    > "${MESSAGES_DIR}/inbox/inspector/${notify_id}.json"
+                    | safe_write "${MESSAGES_DIR}/inbox/inspector/${notify_id}.json" --lock
                 log_info "[watchdog] 子任务停滞: 父任务 $parent_id (无活动超过 ${SUBTASK_STALL_TTL:-7200}s)"
             fi
         fi
@@ -471,7 +475,7 @@ _watchdog_check_subtask_stall() {
                     --arg priority "high" \
                     --arg category "task.escalate_stall" \
                     '{id:$id,from:$from,to:$to,content:$content,timestamp:$timestamp,status:$status,reply_to:null,priority:$priority,category:$category}' \
-                    > "${MESSAGES_DIR}/inbox/${_inst}/${per_inst_id}.json"
+                    | safe_write "${MESSAGES_DIR}/inbox/${_inst}/${per_inst_id}.json" --lock
             done < <(resolve_role_to_all_panes "supervisor")
             log_info "[watchdog] 上报超时: 任务 $tid (上报超过 ${ESCALATE_STALL_TTL:-3600}s)"
         fi
@@ -528,7 +532,7 @@ _watchdog_check_pending_review() {
                 --arg priority "high" \
                 --arg category "task.review_timeout" \
                 '{id:$id,from:$from,to:$to,content:$content,timestamp:$timestamp,status:$status,reply_to:null,priority:$priority,category:$category}' \
-                > "${MESSAGES_DIR}/inbox/human/${notify_id}.json"
+                | safe_write "${MESSAGES_DIR}/inbox/human/${notify_id}.json" --lock
 
             # 也再次提醒 inspector
             _unified_notify "inspector" \
@@ -597,7 +601,7 @@ _watchdog_check_pending_pileup() {
             --arg priority "high" \
             --arg category "task.pending_pileup" \
             '{id:$id,from:$from,to:$to,content:$content,timestamp:$timestamp,status:$status,reply_to:null,priority:$priority,category:$category}' \
-            > "${MESSAGES_DIR}/inbox/${_inst}/${per_inst_id}.json"
+            | safe_write "${MESSAGES_DIR}/inbox/${_inst}/${per_inst_id}.json" --lock
         notified=true
     done < <(resolve_role_to_all_panes "supervisor")
 

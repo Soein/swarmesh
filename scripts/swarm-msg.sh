@@ -188,7 +188,7 @@ cmd_send() {
             status: $status,
             reply_to: (if $reply_to == "" then null else $reply_to end),
             priority: $priority
-        }' > "$msg_file"
+        }' | safe_write "$msg_file" --lock
 
     # 发射事件
     emit_event "message.sent" "$my_instance" "msg_id=$msg_id" "to=$target_instance" "priority=$priority"
@@ -271,7 +271,7 @@ cmd_reply() {
             status: $status,
             reply_to: $reply_to,
             priority: $priority
-        }' > "$reply_file"
+        }' | safe_write "$reply_file" --lock
 
     # 发射事件
     emit_event "message.replied" "$my_instance" "msg_id=$reply_id" "to=$target_instance" "reply_to=$original_msg_id"
@@ -501,7 +501,7 @@ cmd_broadcast() {
                 status: $status,
                 reply_to: null,
                 priority: $priority
-            }' > "${INBOX_DIR}/${inst}/${individual_id}.json"
+            }' | safe_write "${INBOX_DIR}/${inst}/${individual_id}.json" --lock
 
         # 推送通知
         local notification

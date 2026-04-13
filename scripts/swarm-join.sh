@@ -129,7 +129,7 @@ if [[ "$MAX_CLI" -gt 0 ]]; then
             --arg content "CLI 数量已达上限 ($CURRENT_CLI_COUNT/$MAX_CLI)，无法加入角色 $ROLE。如需扩容，请执行: swarm-msg.sh set-limit <新上限>" \
             --arg timestamp "$(get_timestamp)" \
             '{id: $id, from: "system", to: "human", content: $content, timestamp: $timestamp, status: "pending", reply_to: null, priority: "high"}' \
-            > "$MESSAGES_DIR/inbox/human/${NOTIFY_ID}.json" 2>/dev/null || true
+            | safe_write "$MESSAGES_DIR/inbox/human/${NOTIFY_ID}.json" --lock 2>/dev/null || true
         die "CLI 数量已达上限 ($CURRENT_CLI_COUNT/$MAX_CLI)。无法加入角色 $ROLE。已通知 human，请等待上限调整后重试"
     fi
     log_info "CLI 数量: $CURRENT_CLI_COUNT/$MAX_CLI"

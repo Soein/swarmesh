@@ -534,6 +534,29 @@ _auto_claim_next() {
         # 被其他实例抢走了，静默返回
         return 0
     fi
+
+    # 资源互斥检查（auto_claim 场景：冲突则静默回退到 pending，不中断 agent）
+    local auto_exec_mode auto_resource_keys_json auto_blocker
+    auto_exec_mode=$(jq -r '.execution_mode // "parallel"' "$TASKS_DIR/processing/$next_id.json")
+    auto_resource_keys_json=$(jq -c '.resource_keys // []' "$TASKS_DIR/processing/$next_id.json")
+    local auto_rc=0
+    auto_blocker=$(_try_acquire_resources "$next_id" "$auto_exec_mode" "$auto_resource_keys_json" "$my_instance") || auto_rc=$?
+    if [[ $auto_rc -eq 2 ]]; then
+        # 锁表系统错误：回退 pending 不标 blocked，记事件后静默返回（不中断 agent）
+        mv "$TASKS_DIR/processing/$next_id.json" "$next_file" 2>/dev/null || true
+        emit_event "resource.lock_system_error" "$my_instance" "task_id=$next_id"
+        return 0
+    elif [[ $auto_rc -eq 1 ]]; then
+        local tmp_blocked="$TASKS_DIR/processing/$next_id.json.blocked.tmp"
+        jq --arg b "$auto_blocker" \
+           '.blocked_reason = "resource_conflict" | .resource_blocked_by = $b' \
+           "$TASKS_DIR/processing/$next_id.json" > "$tmp_blocked" \
+           && mv "$tmp_blocked" "$TASKS_DIR/processing/$next_id.json"
+        mv "$TASKS_DIR/processing/$next_id.json" "$next_file" 2>/dev/null || true
+        emit_event "resource.conflict" "$my_instance" "task_id=$next_id" "blocked_by=$auto_blocker"
+        return 0
+    fi
+
     # 更新字段
     local tmp_file="$TASKS_DIR/processing/$next_id.json.tmp"
     jq --arg inst "$my_instance" --arg at "$claimed_at" \
@@ -548,6 +571,9 @@ _auto_claim_next() {
     mv "$tmp_file" "$TASKS_DIR/processing/$next_id.json"
 
     emit_event "task.auto_claimed" "$my_instance" "task_id=$next_id"
+    if [[ "$auto_exec_mode" == "exclusive" ]] && [[ "$(jq 'length' <<<"$auto_resource_keys_json")" -gt 0 ]]; then
+        emit_event "resource.acquired" "$my_instance" "task_id=$next_id" "keys=$(jq -c . <<<"$auto_resource_keys_json")"
+    fi
 
     # 通知发布者
     local from_id from_pane
@@ -892,6 +918,8 @@ _cancel_subtask_tree() {
            }])' \
         "$task_file" > "$ftmp" && mv "$ftmp" "$TASKS_DIR/failed/$task_id.json"
     rm -f "$task_file"
+    # 子任务若持有 exclusive 资源锁，必须释放否则永久残留阻塞后续任务
+    _release_resources_tolerant "$task_id"
 
     # 从 group 中移除
     local gid
@@ -1020,6 +1048,7 @@ _compose_parent() {
         mv "$compose_tmp" "$TASKS_DIR/completed/$parent_id.json"
         rm -f "$parent_file"
         rm -f "$TASKS_DIR/processing/${parent_id}.op.lock" "$TASKS_DIR/processing/${parent_id}.compose.lock" 2>/dev/null
+        _release_resources_tolerant "$parent_id"
 
         emit_event "task.composed" "" "parent_id=$parent_id"
 
@@ -1081,6 +1110,215 @@ cmd_create_group() {
 
     info "任务组已创建: $group_id ($title)"
     echo "$group_id"
+}
+
+# =============================================================================
+# 资源锁（exclusive 任务互斥）
+# =============================================================================
+# 设计：
+#   持有表 runtime/resource_locks.json 形如
+#     { "src/api/auth.ts": {"task_id":"task-xxx","holder":"backend","acquired_at":"..."}, ... }
+#   仅 execution_mode == "exclusive" 且 resource_keys 非空的任务参与锁检测。
+#   parallel / 未指定 execution_mode 的任务不占锁（保持旧行为）。
+#   claim 前尝试获取，成功写入持有表；complete/fail/release 时清理。
+
+_resource_locks_path() {
+    local runtime_dir="${RUNTIME_DIR:-$SWARM_ROOT/runtime}"
+    mkdir -p "$runtime_dir"
+    local f="$runtime_dir/resource_locks.json"
+    [[ -f "$f" ]] || echo '{}' > "$f"
+    echo "$f"
+}
+
+# _try_acquire_resources <task_id> <execution_mode> <resource_keys_json> <holder>
+# 成功返回 0（静默）；冲突返回 1 并在 stdout 打印阻塞者 task_id；
+# 非 exclusive 或 resource_keys 为空直接返回 0。
+_try_acquire_resources() {
+    local task_id="$1" execution_mode="$2" resource_keys_json="$3" holder="$4"
+
+    [[ "$execution_mode" == "exclusive" ]] || return 0
+    local key_count
+    key_count=$(jq 'length' <<<"$resource_keys_json" 2>/dev/null || echo 0)
+    [[ "$key_count" -gt 0 ]] || return 0
+
+    local lock_file; lock_file=$(_resource_locks_path)
+    local ret=0
+    local blocker_out=""
+
+    # 用临时文件传递子 shell 结果
+    local out_tmp; out_tmp=$(mktemp)
+    (
+        flock -x 200
+        local blocker=""
+        # 1. 冲突检测
+        while IFS= read -r key; do
+            [[ -z "$key" ]] && continue
+            local holder_task
+            holder_task=$(jq -r --arg k "$key" '.[$k].task_id // empty' "$lock_file" 2>/dev/null)
+            if [[ -n "$holder_task" && "$holder_task" != "$task_id" ]]; then
+                blocker="$holder_task"
+                break
+            fi
+        done < <(jq -r '.[]' <<<"$resource_keys_json")
+
+        if [[ -n "$blocker" ]]; then
+            echo "$blocker" > "$out_tmp"
+            exit 1
+        fi
+
+        # 2. 写入持有表（批量）— fail-closed：jq/mv 任一失败视为 acquire 失败
+        local tmp; tmp=$(mktemp)
+        if ! jq --argjson keys "$resource_keys_json" \
+             --arg tid "$task_id" \
+             --arg h "$holder" \
+             --arg ts "$(get_timestamp)" \
+             'reduce ($keys[]) as $k (.; .[$k] = {task_id: $tid, holder: $h, acquired_at: $ts})' \
+             "$lock_file" > "$tmp" 2>/dev/null; then
+            rm -f "$tmp"
+            echo "__write_failed__" > "$out_tmp"
+            exit 2
+        fi
+        if ! mv "$tmp" "$lock_file" 2>/dev/null; then
+            rm -f "$tmp"
+            echo "__write_failed__" > "$out_tmp"
+            exit 2
+        fi
+        exit 0
+    ) 200>"${lock_file}.lock"
+    ret=$?
+
+    if [[ $ret -ne 0 ]]; then
+        blocker_out=$(cat "$out_tmp" 2>/dev/null)
+        rm -f "$out_tmp"
+        if [[ "$blocker_out" == "__write_failed__" ]]; then
+            log_warn "[_try_acquire_resources] 锁表写入失败, 拒绝认领 task=${task_id} (fail-closed)"
+            emit_event "resource.lock_write_failed" "" "task_id=$task_id"
+            echo ""
+            return 2
+        fi
+        echo "$blocker_out"
+        return 1
+    fi
+    rm -f "$out_tmp"
+    return 0
+}
+
+# _release_resources <task_id>
+# 从持有表移除任何 task_id == $1 的条目；
+# 然后扫描 pending/ 中因该 task 被阻塞的任务，清空 resource_blocked_by 并通知候选 agent。
+_release_resources() {
+    local task_id="$1"
+    [[ -n "$task_id" ]] || return 0
+
+    local lock_file; lock_file=$(_resource_locks_path)
+    local ret=0
+    (
+        flock -x 200
+        local tmp; tmp=$(mktemp)
+        if ! jq --arg tid "$task_id" \
+             'with_entries(select(.value.task_id != $tid))' \
+             "$lock_file" > "$tmp" 2>/dev/null; then
+            rm -f "$tmp"
+            exit 2
+        fi
+        if ! mv "$tmp" "$lock_file" 2>/dev/null; then
+            rm -f "$tmp"
+            exit 2
+        fi
+        exit 0
+    ) 200>"${lock_file}.lock"
+    ret=$?
+
+    if [[ $ret -ne 0 ]]; then
+        log_warn "[_release_resources] 锁表写入失败 task=${task_id}, 跳过事件/解阻塞"
+        emit_event "resource.release_failed" "" "task_id=$task_id"
+        return 1
+    fi
+
+    emit_event "resource.released" "" "task_id=$task_id"
+
+    # 级联解阻塞：扫 pending/ 找被本 task 阻塞的其他任务，清字段 + 通知
+    _unblock_waiters "$task_id"
+    return 0
+}
+
+# _release_resources_tolerant <task_id>
+# 包装 _release_resources：失败时给任务文件打 resource_lock_stale=true 标记
+# 以便后续 doctor / 运维识别需要人工处理的悬挂锁。
+# 适用场景：调用方已完成状态迁移（task 已在 completed/failed），无法回滚。
+_release_resources_tolerant() {
+    local task_id="$1"
+    [[ -n "$task_id" ]] || return 0
+
+    if _release_resources "$task_id"; then
+        return 0
+    fi
+
+    # 释放失败：在任务的终态文件（若存在）上打标记
+    local candidate
+    for candidate in \
+        "$TASKS_DIR/completed/$task_id.json" \
+        "$TASKS_DIR/failed/$task_id.json"; do
+        [[ -f "$candidate" ]] || continue
+        local mtmp; mtmp=$(mktemp)
+        if jq '.resource_lock_stale = true' "$candidate" > "$mtmp" 2>/dev/null; then
+            mv "$mtmp" "$candidate"
+        else
+            rm -f "$mtmp"
+        fi
+        break
+    done
+    return 1
+}
+
+# _unblock_waiters <released_task_id>
+# 扫 pending/ 找 resource_blocked_by == $1 的任务，清 blocked 字段、发事件、通知 assigned_to。
+_unblock_waiters() {
+    local released_id="$1"
+    local pending_dir="${TASKS_DIR:-$RUNTIME_DIR/tasks}/pending"
+    [[ -d "$pending_dir" ]] || return 0
+
+    local waiter_file
+    for waiter_file in "$pending_dir"/*.json; do
+        [[ -f "$waiter_file" ]] || continue
+        local blocked_by
+        blocked_by=$(jq -r '.resource_blocked_by // ""' "$waiter_file" 2>/dev/null)
+        [[ "$blocked_by" == "$released_id" ]] || continue
+
+        local waiter_id waiter_assignee
+        waiter_id=$(jq -r '.id' "$waiter_file")
+        waiter_assignee=$(jq -r '.assigned_to // ""' "$waiter_file")
+
+        # 清字段（原子写）— 时间戳走 get_timestamp 保持与 claim/complete 一致
+        local utmp; utmp=$(mktemp)
+        if jq --arg ts "$(get_timestamp)" --arg rid "$released_id" \
+              '.blocked_reason = null | .resource_blocked_by = null
+               | .flow_log = ((.flow_log // []) + [{
+                     ts: $ts,
+                     action: "unblocked",
+                     from_status: "pending",
+                     to_status: "pending",
+                     actor: "system",
+                     detail: ("资源释放: " + $rid)
+                 }])' \
+               "$waiter_file" > "$utmp" 2>/dev/null; then
+            mv "$utmp" "$waiter_file"
+        else
+            rm -f "$utmp"
+            continue
+        fi
+
+        emit_event "resource.unblocked" "" "task_id=$waiter_id" "released_by=$released_id"
+
+        # 通知候选 agent 可以重新认领
+        if [[ -n "$waiter_assignee" && "$waiter_assignee" != "null" ]]; then
+            if command -v _unified_notify >/dev/null 2>&1; then
+                _unified_notify "$waiter_assignee" \
+                    "[资源释放] 任务 $waiter_id 的资源已被 $released_id 释放，可重新认领: swarm-msg.sh claim $waiter_id" \
+                    "resource.unblocked" "normal" 2>/dev/null || true
+            fi
+        fi
+    done
 }
 
 # =============================================================================
@@ -1416,6 +1654,33 @@ cmd_claim() {
         die "此任务已指派给 $assigned_to，你($my_instance)无法认领"
     fi
 
+    # 资源互斥检查（exclusive 任务必须独占 resource_keys）
+    local exec_mode resource_keys_json
+    exec_mode=$(jq -r '.execution_mode // "parallel"' "$TASKS_DIR/processing/$task_id.json")
+    resource_keys_json=$(jq -c '.resource_keys // []' "$TASKS_DIR/processing/$task_id.json")
+    # 资源锁：区分返回码 1=真冲突 / 2=锁表系统错误
+    local blocker rc=0
+    blocker=$(_try_acquire_resources "$task_id" "$exec_mode" "$resource_keys_json" "$my_instance") || rc=$?
+    if [[ $rc -eq 2 ]]; then
+        # 系统错误：回退 pending，不标 resource_conflict，不写空 blocker
+        mv "$TASKS_DIR/processing/$task_id.json" "$task_file" 2>/dev/null || \
+            info "[WARNING] 任务 $task_id 锁表错误后回退 pending 失败"
+        emit_event "resource.lock_system_error" "$my_instance" "task_id=$task_id"
+        die "任务 $task_id 认领失败: 资源锁表写入异常（非冲突），请检查 runtime/resource_locks.json"
+    elif [[ $rc -eq 1 ]]; then
+        # 真冲突：回退任务到 pending，写 resource_blocked_by
+        local tmp_blocked="$TASKS_DIR/processing/$task_id.json.blocked.tmp"
+        jq --arg b "$blocker" \
+           '.blocked_reason = "resource_conflict" | .resource_blocked_by = $b' \
+           "$TASKS_DIR/processing/$task_id.json" > "$tmp_blocked" \
+           && mv "$tmp_blocked" "$TASKS_DIR/processing/$task_id.json"
+        if ! mv "$TASKS_DIR/processing/$task_id.json" "$task_file" 2>/dev/null; then
+            info "[WARNING] 任务 $task_id 资源冲突后回退 pending 失败"
+        fi
+        emit_event "resource.conflict" "$my_instance" "task_id=$task_id" "blocked_by=$blocker"
+        die "任务 $task_id 的资源已被任务 $blocker 独占，无法认领（resource_keys 冲突）"
+    fi
+
     # 更新字段
     local claimed_at
     claimed_at=$(get_timestamp)
@@ -1432,6 +1697,9 @@ cmd_claim() {
     mv "$tmp_file" "$TASKS_DIR/processing/$task_id.json"
 
     emit_event "task.claimed" "$my_instance" "task_id=$task_id"
+    if [[ "$exec_mode" == "exclusive" ]] && [[ "$(jq 'length' <<<"$resource_keys_json")" -gt 0 ]]; then
+        emit_event "resource.acquired" "$my_instance" "task_id=$task_id" "keys=$(jq -c . <<<"$resource_keys_json")"
+    fi
 
     # 更新 Story 中的任务状态
     _story_update_task "$task_id" "processing"
@@ -1598,6 +1866,7 @@ cmd_complete_task() {
             mv "$ctmp" "$TASKS_DIR/completed/$task_id.json"
             rm -f "$task_file"
             rm -f "$TASKS_DIR/processing/${task_id}.op.lock" "$TASKS_DIR/processing/${task_id}.compose.lock" 2>/dev/null
+            _release_resources_tolerant "$task_id"
         else
             rm -f "$ctmp"
             die "complete-task: jq 处理失败: $task_id"
@@ -1753,6 +2022,8 @@ cmd_fail_task() {
         fi
         rm -f "$task_file"
         rm -f "$TASKS_DIR/processing/${task_id}.op.lock" "$TASKS_DIR/processing/${task_id}.compose.lock" 2>/dev/null
+        # 任务已回 pending，必须释放资源锁否则新 claim 者会被假的持有者阻塞
+        _release_resources "$task_id"
 
         emit_event "task.retry" "$my_instance" "task_id=$task_id" "retry_count=$new_count" "max_retries=$max_retries" "delay=${delay}s"
 
@@ -1798,6 +2069,7 @@ cmd_fail_task() {
         fi
         rm -f "$task_file"
         rm -f "$TASKS_DIR/processing/${task_id}.op.lock" "$TASKS_DIR/processing/${task_id}.compose.lock" 2>/dev/null
+        _release_resources_tolerant "$task_id"
 
         emit_event "task.exhausted" "$my_instance" "task_id=$task_id" "retry_count=$new_count" "max_retries=$max_retries" "summary=重试耗尽"
 
@@ -1878,8 +2150,9 @@ cmd_pause_task() {
     fi
     rm -f "$task_file"
 
-    # 清理锁文件
+    # 清理锁文件 + 释放资源（暂停释放，避免 exclusive 任务卡死其他任务）
     rm -f "$TASKS_DIR/processing/${task_id}.op.lock" "$TASKS_DIR/processing/${task_id}.compose.lock" 2>/dev/null
+    _release_resources "$task_id"
 
     emit_event "task.paused" "$my_instance" "task_id=$task_id" "reason=$reason"
 
@@ -1934,6 +2207,40 @@ cmd_resume_task() {
 
     if [[ "$pane_alive" == true ]]; then
         # 原认领者存活 → 恢复到 processing
+        # 先尝试重新获取资源锁：pause 期间资源可能已被其他任务占用
+        local resume_exec_mode resume_keys_json resume_blocker resume_rc=0
+        resume_exec_mode=$(jq -r '.execution_mode // "parallel"' "$task_file")
+        resume_keys_json=$(jq -c '.resource_keys // []' "$task_file")
+        resume_blocker=$(_try_acquire_resources "$task_id" "$resume_exec_mode" "$resume_keys_json" "$claimed_by") || resume_rc=$?
+        if [[ $resume_rc -eq 2 ]]; then
+            # 锁表系统错误：保持 paused，等 operator 修复后再 resume
+            emit_event "resource.lock_system_error" "$my_instance" "task_id=$task_id"
+            die "resume-task: 资源锁表异常（非冲突），任务保持 paused，请检查 runtime/resource_locks.json 后重试"
+        elif [[ $resume_rc -eq 1 ]]; then
+            # 资源冲突：回退到 pending 而非 processing，避免双持有
+            mkdir -p "$TASKS_DIR/pending"
+            local tmp_b="$task_file.blocked.tmp"
+            if jq --arg now_ts "$now_ts" --arg b "$resume_blocker" \
+                 '.status = "pending" | .claimed_by = null | .claimed_at = null
+                  | del(.paused_at, .pause_reason)
+                  | .blocked_reason = "resource_conflict" | .resource_blocked_by = $b
+                  | .flow_log = ((.flow_log // []) + [{
+                        ts: $now_ts, action: "resume_blocked",
+                        from_status: "paused", to_status: "pending",
+                        actor: "system",
+                        detail: ("资源已被 " + $b + " 占用，回退到 pending")
+                    }])' \
+                 "$task_file" > "$tmp_b" 2>/dev/null; then
+                mv "$tmp_b" "$TASKS_DIR/pending/$task_id.json"
+                rm -f "$task_file"
+                emit_event "task.resume_blocked" "$my_instance" "task_id=$task_id" "blocked_by=$resume_blocker"
+                die "resume-task: 资源 $resume_blocker 占用中，任务回退 pending 等待释放"
+            else
+                rm -f "$tmp_b"
+                die "resume-task: jq 更新失败（resource_conflict 分支）"
+            fi
+        fi
+
         mkdir -p "$TASKS_DIR/processing"
         local tmp="$task_file.tmp"
         if ! jq \
@@ -1949,11 +2256,14 @@ cmd_resume_task() {
               }])
             ' "$task_file" > "$tmp" 2>/dev/null; then
             rm -f "$tmp"
+            # 释放已获取的资源，避免泄漏
+            _release_resources "$task_id"
             die "resume-task: jq 更新失败"
         fi
 
         if ! mv "$tmp" "$TASKS_DIR/processing/$task_id.json" 2>/dev/null; then
             rm -f "$tmp"
+            _release_resources "$task_id"
             die "resume-task: 移动到 processing 失败"
         fi
         rm -f "$task_file"
@@ -2069,9 +2379,10 @@ cmd_cancel_task() {
     fi
     rm -f "$task_file"
 
-    # 清理锁文件
+    # 清理锁文件 + 释放资源（cancel 是终态 failed，用 tolerant 打标记）
     rm -f "$TASKS_DIR/processing/${task_id}.op.lock" "$TASKS_DIR/processing/${task_id}.compose.lock" 2>/dev/null
     rm -f "$TASKS_DIR/paused/${task_id}.op.lock" "$TASKS_DIR/paused/${task_id}.compose.lock" 2>/dev/null
+    _release_resources_tolerant "$task_id"
 
     emit_event "task.cancelled" "$my_instance" "task_id=$task_id" "reason=$reason" "from_status=$from_status"
 
@@ -2783,6 +3094,8 @@ cmd_expand_subtask() {
         "$old_file" > "$ftmp" 2>/dev/null \
         && mv "$ftmp" "$TASKS_DIR/failed/$old_subtask_id.json"; then
         rm -f "$old_file"
+        # 旧子任务若持有 exclusive 锁，展开场景下新子任务未必立即认领，必须释放避免僵尸锁
+        _release_resources_tolerant "$old_subtask_id"
     else
         rm -f "$ftmp"
         die "expand-subtask: 移动旧子任务到 failed/ 失败: $old_subtask_id"
@@ -3176,6 +3489,8 @@ cmd_recover_tasks() {
                    }])' \
                 "$TASKS_DIR/pending/$tid.json" > "$tmp_file"
             mv "$tmp_file" "$TASKS_DIR/pending/$tid.json"
+            # 任务回 pending，原认领者离线，必须释放资源锁
+            _release_resources "$tid"
             recovered=$((recovered + 1))
             emit_event "task.recovered" "" "task_id=$tid" "original_claimer=$claimed_by"
             info "已恢复任务: $tid (原认领者 $claimed_by 已离线)"
@@ -3568,6 +3883,8 @@ cmd_reject_task() {
     fi
     mv "$tmp" "$TASKS_DIR/failed/$task_id.json"
     rm -f "$task_file"
+    # 驳回时任务通常从 processing / pending_review 移入 failed，释放任何持有的资源锁
+    _release_resources_tolerant "$task_id"
 
     emit_event "task.rejected" "$my_instance" "task_id=$task_id"
 

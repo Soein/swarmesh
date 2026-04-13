@@ -578,10 +578,10 @@ _check_group_completion "task-group-b"
 assert_notify_count "任务组整体完成后通知 human 一次" "human" "1"
 assert_eq "任务组状态 == completed" "completed" "$(jq -r '.status' "$TASKS_DIR/groups/${group_id}.json")"
 
-section "Test 11: write 任务允许空 resource_keys，且相同 resource_keys 也允许并发认领"
+section "Test 11: exclusive 任务的 resource_keys 必须真正互斥（Codex/Claude 交叉审查发现的空壳约束修复）"
 setup_runtime
 task_without_keys=$(publish_task "develop" "写 kernel C" "$(build_contract "implement" "write" "exclusive" '[]')")
-assert_file_exists "write 任务允许空 resource_keys 仍可发布" "$TASKS_DIR/pending/${task_without_keys}.json"
+assert_file_exists "空 resource_keys 的 exclusive 任务仍可发布" "$TASKS_DIR/pending/${task_without_keys}.json"
 assert_eq "空 resource_keys 会原样保留" "0" "$(jq '.resource_keys | length' "$TASKS_DIR/pending/${task_without_keys}.json")"
 
 setup_runtime
@@ -590,10 +590,27 @@ task_b=$(publish_task "develop" "写 kernel B" "$(build_contract "implement" "wr
 TEST_INSTANCE="implementer"
 cmd_claim "$task_a" >/dev/null
 TEST_INSTANCE="implementer-2"
-cmd_claim "$task_b" >/dev/null
-assert_file_exists "第二个工蜂也能进入 processing" "$TASKS_DIR/processing/${task_b}.json"
-assert_file_not_exists "第二个工蜂不会因为 resource_keys 被打回 pending" "$TASKS_DIR/pending/${task_b}.json"
-assert_eq "blocked_reason 保持为空" "null" "$(jq -r '.blocked_reason // "null"' "$TASKS_DIR/processing/${task_b}.json")"
+# 第二个 exclusive claim 必须失败：资源被 task_a 独占
+if ( cmd_claim "$task_b" >/dev/null 2>&1 ); then
+    assert_eq "第二个 exclusive claim 应被资源冲突拒绝" "expected_fail" "claim_succeeded"
+else
+    assert_eq "第二个 exclusive claim 被资源冲突拒绝" "expected_fail" "expected_fail"
+fi
+assert_file_not_exists "第二个任务不应进入 processing" "$TASKS_DIR/processing/${task_b}.json"
+assert_file_exists "第二个任务应回退 pending" "$TASKS_DIR/pending/${task_b}.json"
+assert_eq "blocked_reason 被标记为 resource_conflict" "resource_conflict" "$(jq -r '.blocked_reason // "null"' "$TASKS_DIR/pending/${task_b}.json")"
+assert_eq "resource_blocked_by 指向 task_a" "$task_a" "$(jq -r '.resource_blocked_by // "null"' "$TASKS_DIR/pending/${task_b}.json")"
+
+# parallel 任务仍允许共享 resource_keys（回归保护）
+setup_runtime
+task_p1=$(publish_task "develop" "并行任务 P1" "$(build_contract "implement" "write" "parallel" '["repo:kernel"]')")
+task_p2=$(publish_task "develop" "并行任务 P2" "$(build_contract "implement" "write" "parallel" '["repo:kernel"]')")
+TEST_INSTANCE="implementer"
+cmd_claim "$task_p1" >/dev/null
+TEST_INSTANCE="implementer-2"
+cmd_claim "$task_p2" >/dev/null
+assert_file_exists "parallel 任务允许共享 resource_keys (P1)" "$TASKS_DIR/processing/${task_p1}.json"
+assert_file_exists "parallel 任务允许共享 resource_keys (P2)" "$TASKS_DIR/processing/${task_p2}.json"
 
 section "Test 12: resume 快照缺失或 schema_version 不匹配时拒绝恢复"
 resume_project_missing="$TEST_ROOT/resume-missing"
