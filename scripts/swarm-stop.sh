@@ -54,6 +54,7 @@ Swarm Stop Script - 蜂群系统停止脚本
     --force         强制停止，不保存状态，不确认
     --keep-logs     保留日志文件，不归档
     --clean         停止后清理所有运行时数据（messages/tasks/state/events）
+    --project PATH  显式指定项目目录（不在项目目录内执行时必须传，避免误用插件根）
     --help          显示此帮助信息
 
 示例:
@@ -542,6 +543,7 @@ kill_session() {
 
 main() {
     # 解析命令行参数
+    local _override_project=""
     while [[ $# -gt 0 ]]; do
         case $1 in
             --force)
@@ -556,6 +558,10 @@ main() {
                 CLEAN_ALL=true
                 shift
                 ;;
+            --project)
+                _override_project="$2"
+                shift 2
+                ;;
             --help|-h)
                 show_help
                 exit 0
@@ -565,6 +571,15 @@ main() {
                 ;;
         esac
     done
+
+    # 如果显式传了 --project，重算 RUNTIME_DIR 等路径，避免回退到插件根
+    if [[ -n "$_override_project" ]]; then
+        PROJECT_DIR="$(cd "$_override_project" && pwd)"
+        export PROJECT_DIR
+        if declare -F _reinit_runtime_paths >/dev/null 2>&1; then
+            _reinit_runtime_paths
+        fi
+    fi
 
     # 检查依赖
     check_dependencies tmux jq date

@@ -25,11 +25,22 @@ set -uo pipefail
 
 DISCUSS_SESSION_NAME="${DISCUSS_SESSION_NAME:-swarm-discuss}"
 DISCUSS_WATCH_INTERVAL="${DISCUSS_WATCH_INTERVAL:-3}"
-DISCUSS_QUIET_PERIOD="${DISCUSS_QUIET_PERIOD:-2}"
+# 提高默认防抖：8 秒静默才算答完（threshold = 8/3+1 = 3 次连续 quiet hits）
+DISCUSS_QUIET_PERIOD="${DISCUSS_QUIET_PERIOD:-8}"
+# 冷启动 baseline 等待秒数：watcher 启动后这段时间不推任何 answer
+DISCUSS_BASELINE_WAIT="${DISCUSS_BASELINE_WAIT:-10}"
+# 最小回答字符数（去装饰后），过短判为噪音
+DISCUSS_MIN_ANSWER_CHARS="${DISCUSS_MIN_ANSWER_CHARS:-20}"
 DISCUSS_CODEX_TRUST_AUTO="${DISCUSS_CODEX_TRUST_AUTO:-1}"
+DISCUSS_CLAUDE_SAFETY_AUTO="${DISCUSS_CLAUDE_SAFETY_AUTO:-1}"
+# 最后从过滤后的内容里只取末尾 N 行作为 answer（CLI 答完的最新输出在末尾）
+DISCUSS_ANSWER_TAIL="${DISCUSS_ANSWER_TAIL:-8}"
 
 # Claude / Gemini / Codex 提示符
 PROMPT_PATTERNS_WATCH="${PROMPT_PATTERNS_WATCH:-❯|›|Type your message|Use /skills|context left|esc to interrupt}"
+
+# 启动屏特征（出现这些就不算答完）
+STARTUP_PATTERNS="${STARTUP_PATTERNS:-Quick safety check|Do you trust|trust the contents|Press enter to continue|2\\. No, exit|Enter to confirm|OpenAI Codex \\(v|using-superpowers|SessionStart hook|UserPromptSubmit hook}"
 
 log()  { printf '[discuss-watcher %s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 die()  { log "ERROR: $*"; exit 1; }
@@ -54,9 +65,34 @@ _locate_runtime() {
     DISCUSS_DIR="$RUNTIME_DIR/discuss"
     DISCUSS_LOG="$DISCUSS_DIR/session.jsonl"
     WATCH_STATE="$DISCUSS_DIR/watch-state.json"
+    BASELINE_DIR="$DISCUSS_DIR/baselines"
     PID_FILE="$DISCUSS_DIR/watcher.pid"
     HEARTBEAT="$DISCUSS_DIR/watcher.heartbeat"
-    mkdir -p "$DISCUSS_DIR"
+    HANDLED_FLAGS="$DISCUSS_DIR/handled-flags"
+    mkdir -p "$DISCUSS_DIR" "$BASELINE_DIR" "$HANDLED_FLAGS"
+}
+
+# baseline：watcher 启动后第一次见到该 pane 时抓快照；后续 answer 必须不在 baseline 里
+_get_baseline() {
+    local pane="$1"
+    local f="$BASELINE_DIR/${pane//./_}.txt"
+    [[ -f "$f" ]] && cat "$f" || true
+}
+
+_save_baseline() {
+    local pane="$1" content="$2"
+    printf '%s' "$content" > "$BASELINE_DIR/${pane//./_}.txt"
+}
+
+# 标记某次启动屏处理已完成（防止重复触发 trust/safety handler）
+_handled_flag_set() {
+    local pane="$1" flag="$2"
+    touch "$HANDLED_FLAGS/${pane//./_}_${flag}"
+}
+
+_handled_flag_check() {
+    local pane="$1" flag="$2"
+    [[ -f "$HANDLED_FLAGS/${pane//./_}_${flag}" ]]
 }
 
 # ANSI 清洗 + 回车规范化
@@ -78,13 +114,30 @@ _hit_prompt() {
     grep -qE "$PROMPT_PATTERNS_WATCH" <<<"$tail"
 }
 
-# Codex trust prompt 自动接受
+# Codex trust prompt 自动接受（处理过一次就记 flag，防止重复触发）
 _handle_codex_trust() {
     local pane="$1"
+    _handled_flag_check "$pane" "codex_trust" && return 1
     local text; text=$(_capture_pane_clean "$pane" 50)
     if grep -q "Do you trust the contents of this directory" <<<"$text"; then
-        log "检测到 Codex trust prompt，自动选 '1'"
+        log "检测到 Codex trust prompt @ ${pane}，自动选 '1' Enter"
         tmux send-keys -t "${DISCUSS_SESSION_NAME}:${pane}" "1" Enter
+        _handled_flag_set "$pane" "codex_trust"
+        sleep 1
+        return 0
+    fi
+    return 1
+}
+
+# Claude "Quick safety check" 启动屏自动接受（按 Enter 继续）
+_handle_claude_safety() {
+    local pane="$1"
+    _handled_flag_check "$pane" "claude_safety" && return 1
+    local text; text=$(_capture_pane_clean "$pane" 50)
+    if grep -qE "Quick safety check|Is this a project you" <<<"$text"; then
+        log "检测到 Claude safety check @ ${pane}，自动按 Enter"
+        tmux send-keys -t "${DISCUSS_SESSION_NAME}:${pane}" Enter
+        _handled_flag_set "$pane" "claude_safety"
         sleep 1
         return 0
     fi
@@ -105,17 +158,26 @@ _get_pane_last_text() {
 }
 
 _save_pane_state() {
-    local pane="$1" hash="$2" text="$3" quiet_hits="${4:-0}"
+    local pane="$1" hash="$2" text="$3" quiet_hits="${4:-0}" posted_hash="${5:-}"
     local tmp; tmp=$(mktemp "${DISCUSS_DIR}/.ws.XXXXXX")
+    if [[ -z "$posted_hash" ]]; then
+        posted_hash=$(_get_pane_posted_hash "$pane")
+    fi
     if [[ -f "$WATCH_STATE" ]]; then
-        jq --arg p "$pane" --arg h "$hash" --arg t "$text" --argjson q "$quiet_hits" \
-            '.panes[$p] = {last_hash:$h, last_text:$t, quiet_hits:$q}' \
+        jq --arg p "$pane" --arg h "$hash" --arg t "$text" --argjson q "$quiet_hits" --arg ph "$posted_hash" \
+            '.panes[$p] = {last_hash:$h, last_text:$t, quiet_hits:$q, posted_hash:$ph}' \
             "$WATCH_STATE" > "$tmp"
     else
-        jq -n --arg p "$pane" --arg h "$hash" --arg t "$text" --argjson q "$quiet_hits" \
-            '{panes: {($p): {last_hash:$h, last_text:$t, quiet_hits:$q}}}' > "$tmp"
+        jq -n --arg p "$pane" --arg h "$hash" --arg t "$text" --argjson q "$quiet_hits" --arg ph "$posted_hash" \
+            '{panes: {($p): {last_hash:$h, last_text:$t, quiet_hits:$q, posted_hash:$ph}}}' > "$tmp"
     fi
     mv "$tmp" "$WATCH_STATE"
+}
+
+_get_pane_posted_hash() {
+    local pane="$1"
+    [[ -f "$WATCH_STATE" ]] || { echo ""; return; }
+    jq -r --arg p "$pane" '.panes[$p].posted_hash // ""' "$WATCH_STATE" 2>/dev/null
 }
 
 _get_quiet_hits() {
@@ -130,36 +192,34 @@ _get_quiet_hits() {
 _extract_answer() {
     local pane="$1" current_text="$2" last_text="$3"
 
-    # 找到 last_text 在 current_text 里最后一次出现后的增量
-    # last_text 可能多行，用文件传递避免 awk -v 换行问题
-    local new_part
-    if [[ -n "$last_text" ]] && grep -qF -- "$last_text" <<<"$current_text" 2>/dev/null; then
-        local last_tmp cur_tmp
-        last_tmp=$(mktemp); cur_tmp=$(mktemp)
-        printf '%s' "$last_text" > "$last_tmp"
-        printf '%s' "$current_text" > "$cur_tmp"
-        # 用只取最后一行作为锚点（多行 last_text 用末行匹配更稳定）
-        local anchor; anchor=$(tail -1 "$last_tmp")
-        if [[ -n "$anchor" ]]; then
-            new_part=$(awk -v anchor="$anchor" '
-                BEGIN{found=0}
-                { if (!found && index($0, anchor)) { found=1; next }
-                  if (found) print }
-            ' "$cur_tmp")
-        else
-            new_part="$current_text"
+    # 主策略：用 baseline 逐行剔除（baseline 是 watcher 启动时抓的快照，
+    # 任何 baseline 已有行都不可能是 answer）
+    local new_part="$current_text"
+    local baseline; baseline=$(_get_baseline "$pane")
+    if [[ -n "$baseline" ]]; then
+        local bl_tmp; bl_tmp=$(mktemp)
+        # 只用 baseline 里"非空、非装饰"的行做剔除模式，避免 grep -vFf 把空行也吃了
+        printf '%s' "$baseline" | awk 'NF && length($0) > 2' > "$bl_tmp"
+        if [[ -s "$bl_tmp" ]]; then
+            new_part=$(printf '%s' "$new_part" | grep -vFxf "$bl_tmp" || true)
         fi
-        rm -f "$last_tmp" "$cur_tmp"
-    else
-        new_part="$current_text"
+        rm -f "$bl_tmp"
     fi
 
-    # 过滤：去掉提示符行 + CLI 装饰 + 空行
+    # 关键：Codex 等 CLI 渲染时给行加 2 空格缩进，必须先 trim 再过滤
+    # 过滤：提示符 / CLI 装饰 / 启动屏 / 空行 / paste header 残留 / 工具调用日志
     printf '%s\n' "$new_part" \
-        | grep -vE "$PROMPT_PATTERNS_WATCH|^[[:space:]]*$|^─+$|^╭|^│|^╰|gpt-.*·|Opus.*context|上下文 |用量 |本周 |/private/tmp|⏱️|\\[Opus|\\[Sonnet|Working.*esc to interrupt" \
         | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+        | grep -vE "$PROMPT_PATTERNS_WATCH" \
+        | grep -vE "^$|^─+$|^╭|^│|^╰" \
+        | grep -vE "gpt-.*·|Opus.*context|上下文 |用量 |本周 |/private/tmp|⏱️|\\[Opus|\\[Sonnet|Working.*esc to interrupt" \
+        | grep -vE "$STARTUP_PATTERNS" \
+        | grep -vE "^---历史---|^---当前---|^主持：|^\\[turn [0-9]|^Tip:|^hook context:|^Quick safety|^Press enter|^Enter to confirm|^content\")" \
+        | grep -vE "^•[[:space:]]*Ran |^•[[:space:]]*Explored|^└|^│[[:space:]]*sed|^│[[:space:]]*find|^│[[:space:]]*\\[|^… \\+[0-9]+ lines" \
+        | grep -vE "Added \\.omx|workspace conventions|AGENTS\\.md|using-superpowers|SessionStart hook|UserPromptSubmit hook|\\.omx/state|\\.omx 当前" \
+        | grep -vE "^user: @|^@cx |^@cl |^@gem " \
         | awk 'NF' \
-        | head -200
+        | tail -"${DISCUSS_ANSWER_TAIL:-8}"
 }
 
 # -----------------------------------------------------------------------------
@@ -168,13 +228,31 @@ _extract_answer() {
 _tick_pane() {
     local name="$1" pane="$2" cli_type="$3"
 
-    # Codex trust prompt 自动处理
+    # 1. CLI 启动屏自动处理（trust / safety check）
     if [[ "$cli_type" == "codex" && "$DISCUSS_CODEX_TRUST_AUTO" == "1" ]]; then
         _handle_codex_trust "$pane" && return 0
+    fi
+    if [[ "$cli_type" == "claude" && "$DISCUSS_CLAUDE_SAFETY_AUTO" == "1" ]]; then
+        _handle_claude_safety "$pane" && return 0
     fi
 
     local text; text=$(_capture_pane_clean "$pane" 300)
     [[ -n "$text" ]] || return 0
+
+    # 2. 冷启动 baseline：第一次见到该 pane → 抓快照，本轮不推任何 answer
+    if [[ ! -f "$BASELINE_DIR/${pane//./_}.txt" ]]; then
+        _save_baseline "$pane" "$text"
+        log "📸 baseline 已抓 @ $pane (${#text} chars)，将在 ${DISCUSS_BASELINE_WAIT}s 后开始监听 answer"
+        local hash; hash=$(printf '%s' "$text" | shasum -a 256 | awk '{print $1}')
+        _save_pane_state "$pane" "$hash" "$text" 0
+        return 0
+    fi
+
+    # 3. 启动屏特征仍在底部 → 跳过本轮（CLI 还在初始化）
+    # 只检查最后 12 行，避免 scrollback 里的历史启动屏永久阻断
+    if printf '%s\n' "$text" | tail -12 | grep -qE "$STARTUP_PATTERNS"; then
+        return 0
+    fi
 
     local hash; hash=$(printf '%s' "$text" | shasum -a 256 | awk '{print $1}')
     local last_hash; last_hash=$(_get_pane_last_hash "$pane")
@@ -186,19 +264,26 @@ _tick_pane() {
         if _hit_prompt "$text"; then
             quiet_hits=$((quiet_hits + 1))
             _save_pane_state "$pane" "$hash" "$last_text" "$quiet_hits"
-            # 达到阈值，确认答完
             local threshold=$((DISCUSS_QUIET_PERIOD / DISCUSS_WATCH_INTERVAL + 1))
             if (( quiet_hits >= threshold )); then
+                # 4. 重复触发去重：本次 hash 已经 post 过就跳过
+                local posted_hash; posted_hash=$(_get_pane_posted_hash "$pane")
+                if [[ "$hash" == "$posted_hash" ]]; then
+                    _save_pane_state "$pane" "$hash" "$text" "$quiet_hits" "$posted_hash"
+                    return 0
+                fi
                 local answer; answer=$(_extract_answer "$pane" "$text" "$last_text")
-                if [[ -n "$answer" ]]; then
-                    log "✅ $name 答完，推 jsonl (${#answer} chars)"
+                # 5. 最小回答长度阈值
+                if [[ -n "$answer" && ${#answer} -ge ${DISCUSS_MIN_ANSWER_CHARS} ]]; then
+                    log "✅ ${name} 答完，推 jsonl (${#answer} chars)"
                     "$SCRIPT_DIR/discuss-relay.sh" post --from "$name" --content "$answer" 2>&1 \
                         | sed "s/^/  /" >&2 || log "post 失败"
-                    # 记录本轮 answer tail 作为下次 last_text 锚
-                    _save_pane_state "$pane" "$hash" "$text" 0
+                    # 关键：把当前 pane 内容写为新 baseline，下轮只看新增
+                    _save_baseline "$pane" "$text"
+                    _save_pane_state "$pane" "$hash" "$text" 0 "$hash"
                 else
-                    log "⚠️ $name 无新增可提取（可能是启动屏）"
-                    _save_pane_state "$pane" "$hash" "$text" 0
+                    [[ -n "$answer" ]] && log "⏭ ${name} 答案太短 (${#answer} < $DISCUSS_MIN_ANSWER_CHARS)，跳过"
+                    _save_pane_state "$pane" "$hash" "$text" 0 "$hash"
                 fi
             fi
         fi

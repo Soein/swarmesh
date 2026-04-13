@@ -125,33 +125,84 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-section "Test 4: 答完检测 + 防抖"
+section "Test 4: baseline + 防抖 + 最小长度"
 # -----------------------------------------------------------------------------
-# 提高防抖阈值，测试行为更清晰
 DISCUSS_QUIET_PERIOD=6      # threshold = 6/3 + 1 = 3
 DISCUSS_WATCH_INTERVAL=3
+DISCUSS_MIN_ANSWER_CHARS=10
 rm -f "$WATCH_STATE"
-MOCK_CAPTURE=$'some claude answer\n❯ '
+rm -rf "$BASELINE_DIR"; mkdir -p "$BASELINE_DIR"
+rm -rf "$HANDLED_FLAGS"; mkdir -p "$HANDLED_FLAGS"
 
-# 第一次 tick：没有 last_hash → 保存 hash + quiet_hits=0，不触发
+# 模拟 pane: 启动后是空闲提示符（baseline），之后出现真实回答
+MOCK_CAPTURE=$'starting up...\n❯ '
+
+# 第一次 tick：抓 baseline，不触发
 _tick_pane "cl" "0.1" "claude"
-[[ ! -s "$MOCK_POST_JOURNAL" ]] && pass "首次 tick 不触发 post" \
-    || fail "首次不应 post"
+[[ -f "$BASELINE_DIR/0_1.txt" ]] && pass "首次抓 baseline" || fail "baseline 未抓"
+[[ ! -s "$MOCK_POST_JOURNAL" ]] && pass "首次不触发 post" || fail "首次不应 post"
 
-# 第二次 tick：hash 相同 + 命中 prompt → quiet_hits=1
+# 模拟 CLI 输出真实回答（baseline + 新增）
+MOCK_CAPTURE=$'starting up...\nThis is the actual long answer from claude with 50+ chars.\n❯ '
+
+# 第二次 tick：内容变化，重置 quiet_hits
+_tick_pane "cl" "0.1" "claude"
+[[ ! -s "$MOCK_POST_JOURNAL" ]] && pass "内容变化不立即触发" || fail "不应立即 post"
+
+# 第三次 tick：内容相同 + 命中 prompt → quiet_hits=1
 _tick_pane "cl" "0.1" "claude"
 qh=$(jq -r '.panes["0.1"].quiet_hits' "$WATCH_STATE")
-[[ "$qh" == "1" ]] && pass "quiet_hits=1 防抖计数" || fail "quiet_hits=$qh"
+[[ "$qh" == "1" ]] && pass "quiet_hits=1 防抖" || fail "quiet_hits=$qh"
 
-# 第三次 tick：quiet_hits=2，仍未达到阈值 3
+# 第四次 tick：quiet_hits=2
 _tick_pane "cl" "0.1" "claude"
-[[ ! -s "$MOCK_POST_JOURNAL" ]] && pass "第三次未达阈值不触发" \
+qh=$(jq -r '.panes["0.1"].quiet_hits' "$WATCH_STATE")
+[[ "$qh" == "2" ]] && pass "quiet_hits=2" || fail "quiet_hits=$qh"
+[[ ! -s "$MOCK_POST_JOURNAL" ]] && pass "未达阈值不触发" || fail "不应 post"
+
+# 第五次 tick：quiet_hits=3 → 触发 post
+_tick_pane "cl" "0.1" "claude"
+grep -q 'POST.*--from cl' "$MOCK_POST_JOURNAL" && pass "达阈值触发 post" \
+    || fail "应触发 post: $(cat "$MOCK_POST_JOURNAL")"
+
+# baseline 内容应该被剔除——post 内容不含 "starting up"
+! grep -q 'starting up' "$MOCK_POST_JOURNAL" && pass "baseline 已剔除（不含启动文本）" \
+    || fail "baseline 未剔除"
+grep -q 'actual long answer' "$MOCK_POST_JOURNAL" && pass "保留真实回答" \
+    || fail "真实回答缺失"
+
+section "Test 4b: 启动屏特征触发跳过"
+# -----------------------------------------------------------------------------
+rm -f "$WATCH_STATE"; rm -rf "$BASELINE_DIR"; mkdir -p "$BASELINE_DIR"
+: > "$MOCK_POST_JOURNAL"
+# 抓 baseline 后，pane 仍含启动屏特征
+_tick_pane "cl" "0.2" "claude"
+MOCK_CAPTURE=$'Quick safety check: Is this a project you trust?\nsomething\n❯ '
+_tick_pane "cl" "0.2" "claude"
+_tick_pane "cl" "0.2" "claude"
+_tick_pane "cl" "0.2" "claude"
+[[ ! -s "$MOCK_POST_JOURNAL" ]] && pass "启动屏特征出现时不触发 post" \
     || fail "不应 post: $(cat "$MOCK_POST_JOURNAL")"
 
-# 第四次 tick：quiet_hits=3 达到阈值 → 触发 post
-_tick_pane "cl" "0.1" "claude"
-grep -q 'POST.*--from cl' "$MOCK_POST_JOURNAL" && pass "第四次达阈值触发 post" \
-    || fail "应触发 post: $(cat "$MOCK_POST_JOURNAL")"
+section "Test 4c: Codex trust 去重（只触发一次）"
+# -----------------------------------------------------------------------------
+rm -rf "$HANDLED_FLAGS"; mkdir -p "$HANDLED_FLAGS"
+: > "$MOCK_TMUX_JOURNAL"
+MOCK_CAPTURE='Do you trust the contents of this directory?'
+_handle_codex_trust "0.5" >/dev/null
+_handle_codex_trust "0.5" >/dev/null
+_handle_codex_trust "0.5" >/dev/null
+hits=$(grep -c 'SENDKEYS' "$MOCK_TMUX_JOURNAL" || echo 0)
+[[ "$hits" == "1" ]] && pass "Codex trust 仅触发一次（已 dedup）" || fail "触发 $hits 次"
+
+section "Test 4d: Claude safety check 自动 Enter"
+# -----------------------------------------------------------------------------
+rm -rf "$HANDLED_FLAGS"; mkdir -p "$HANDLED_FLAGS"
+: > "$MOCK_TMUX_JOURNAL"
+MOCK_CAPTURE='Quick safety check: Is this a project you trust?'
+if _handle_claude_safety "0.6"; then pass "claude safety 处理"; else fail "应处理"; fi
+grep -q 'SENDKEYS.*Enter' "$MOCK_TMUX_JOURNAL" && pass "send Enter" \
+    || fail "未发送 Enter: $(cat "$MOCK_TMUX_JOURNAL")"
 
 # -----------------------------------------------------------------------------
 section "Test 5: _extract_answer 清洗装饰行"
