@@ -1,5 +1,6 @@
 # 运行时数据（每次启动重新生成）
 runtime/
+.swarm/
 
 # 原型/实验代码
 prototype/

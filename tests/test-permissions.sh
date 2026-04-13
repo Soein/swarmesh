@@ -25,7 +25,8 @@
 
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$TEST_DIR/../scripts" && pwd)"
 export SWARM_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # 用临时目录，避免污染真实 runtime

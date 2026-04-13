@@ -1,6 +1,83 @@
 # Swarmesh
 
-[English](#english) | [中文](#中文)
+[English](#english) | [中文](#中文) | [🔌 Claude Code 插件安装](#-claude-code-插件安装)
+
+---
+
+## 🔌 Claude Code 插件安装
+
+Swarmesh 现在可作为 **Claude Code 插件**使用，提供两种协作模式：
+
+| 模式 | 何时用 | 启动命令 |
+|---|---|---|
+| **discuss** | 想和多个 CLI（Codex / Claude / Gemini）圆桌讨论、碰方案 | `/swarm-chat <项目> <cli>` |
+| **execute** | 方案已定，要由 supervisor 拆任务派发给全角色团队 | `/swarm-start <项目> [profile]` |
+
+### 安装
+
+```bash
+# 在 Claude Code 中：
+/plugin marketplace add <你的 GitHub 用户>/tmux-swarm
+/plugin install tmux-swarm
+```
+
+或本地测试：
+
+```bash
+claude --plugin-dir ~/项目/tmux并行
+```
+
+### discuss 模式速览
+
+```bash
+/swarm-chat ~/my-app codex cx          # 首发 Codex
+/swarm-chat-add claude "claude"        # 再加 Claude
+/swarm-chat-msg "@cx @claude 讨论 Redis vs Dynamo 做会话缓存"
+/swarm-chat-msg "@cx 基于上面对比，结论是？"
+/swarm-promote --profile minimal       # 讨论成熟后转 execute 落地
+```
+
+关键规则：
+- 只有 `@点名` 才触发对方接话（防刷屏）
+- 默认最大轮次 20（`SWARM_DISCUSS_MAX_TURNS` 调整）
+- 每次喂给 CLI 的上下文 = 最近 10 轮对话（`SWARM_DISCUSS_CONTEXT_TURNS` 调整）
+- v0.1：CLI 回复目前需要 `discuss-relay post --from <who> --content "..."` 手动落盘；后续版本自动捕获
+
+### execute 模式速览
+
+```bash
+/swarm-start ~/my-app minimal    # 起 4 角色团队
+/swarm-task "实现用户注册系统"    # 派发给 supervisor，自动拆解
+/swarm-status                    # 观察进度
+/swarm-stop                      # 结束
+```
+
+### 平台支持
+
+- ✅ macOS / Linux
+- ❌ Windows 原生（需 WSL）
+
+### Slash Commands
+
+| 命令 | 模式 | 作用 |
+|---|---|---|
+| `/swarm-start` | execute | 启动蜂群 |
+| `/swarm-task` | execute | 派发任务 |
+| `/swarm-join` / `/swarm-leave` | execute | 动态增删角色 |
+| `/swarm-chat` | discuss | 启动圆桌 |
+| `/swarm-chat-add` | discuss | 加参与者 |
+| `/swarm-chat-msg` | discuss | 发消息（@点名） |
+| `/swarm-promote` | discuss→execute | 结案转落地 |
+| `/swarm-status` | 通用 | 查看状态 |
+| `/swarm-stop` | 通用 | 停止 |
+
+### 依赖检测
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/scripts/check-deps.sh
+```
+
+SessionStart hook 会自动检测；缺依赖时打印安装建议但不阻塞会话。
 
 ---
 
