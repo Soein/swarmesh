@@ -248,7 +248,14 @@ swarm-msg.sh publish develop "Implement API" \
   --verify '{"build":"go build ./..."}'
 ```
 
-`resource_keys` now serve as integration hints only. They do not block parallel claims; they help identify which tasks should be integrated together later.
+`resource_keys` combined with `execution_mode` controls real concurrency:
+
+- **`execution_mode: "exclusive"` + non-empty `resource_keys`** → the task acquires an exclusive lock on every listed key at `claim` time. If any key is already held by another processing task, `claim` is rejected; the task stays in `pending/` with `resource_blocked_by` pointing at the holder. When the holder finishes, waiters are automatically unblocked and their owners are notified.
+- **`execution_mode: "parallel"` (default)** or empty `resource_keys` → no lock is taken; multiple tasks may share the same keys.
+
+Holdings are persisted in `runtime/resource_locks.json`. Use `swarm-cli.sh status` to see who holds what (section **🔒 Resources**) and which tasks are waiting (**⏸ Resource wait queue**). Lock-related events in `runtime/events.jsonl`: `resource.acquired` / `resource.released` / `resource.conflict` / `resource.unblocked` / `resource.lock_system_error`.
+
+If the lock table itself becomes unwritable (disk full, corrupted JSON), `claim` fails fast with `resource.lock_system_error` rather than silently succeeding. A task that terminates while the lock release cannot persist is marked `resource_lock_stale: true` on the final JSON for operator follow-up.
 
 #### Subtask System
 
@@ -743,7 +750,14 @@ swarm-msg.sh publish develop "实现 API" \
   --verify '{"build":"go build ./..."}'
 ```
 
-`resource_keys` 现在只作为后置集成线索，不再阻塞并行认领；它用来标记哪些任务后续应该一起集成、一起验收。
+`resource_keys` 配合 `execution_mode` 控制真实并发语义：
+
+- **`execution_mode: "exclusive"` 且 `resource_keys` 非空** → 任务 `claim` 时会对每个 key 申请**独占锁**。若任一 key 已被其他 processing 任务持有，`claim` 会被拒绝，任务留在 `pending/` 并把 `resource_blocked_by` 指向持有者。持有者完成后，等待任务会自动解阻塞并通知其 assignee。
+- **`execution_mode: "parallel"`（默认）** 或 `resource_keys` 为空 → 不占锁，多个任务可共享相同 key。
+
+持有记录存在 `runtime/resource_locks.json`。用 `swarm-cli.sh status` 可看到**🔒 资源锁**（谁持有什么资源）和**⏸ 资源等待队列**（哪些任务在等谁）。`runtime/events.jsonl` 相关事件：`resource.acquired` / `resource.released` / `resource.conflict` / `resource.unblocked` / `resource.lock_system_error`。
+
+若锁表本身无法写入（磁盘满、JSON 损坏），`claim` 会发 `resource.lock_system_error` 并快速失败而非静默通过。任务在终态（completed/failed）释放锁失败时，会在任务 JSON 上标记 `resource_lock_stale: true` 便于人工排查。
 
 #### 子任务拆分
 
