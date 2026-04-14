@@ -268,9 +268,17 @@ cmd_collect() {
                 | awk 'NF')
         fi
         if [[ -n "$answer" ]]; then
-            printf '%s' "$answer" > "$vote_dir/answer-$n.md"
-            rm -f "$vote_dir/expect-$n.flag"
-            info "✅ 收到 @$n 的回答 ($(wc -l <<<"$answer" | tr -d ' ') 行)"
+            # v0.4: 弃权识别——marker 内仅写 "ABSTAIN: <理由>" 单行
+            if [[ "$answer" =~ ^[[:space:]]*ABSTAIN:[[:space:]]*(.*) ]]; then
+                local reason="${BASH_REMATCH[1]}"
+                printf '%s' "$reason" > "$vote_dir/abstain-$n.md"
+                rm -f "$vote_dir/expect-$n.flag"
+                info "🟡 @$n 弃权（${reason:0:60}...）"
+            else
+                printf '%s' "$answer" > "$vote_dir/answer-$n.md"
+                rm -f "$vote_dir/expect-$n.flag"
+                info "✅ 收到 @$n 的回答 ($(wc -l <<<"$answer" | tr -d ' ') 行)"
+            fi
         else
             info "⏳ @$n 尚未回答（或无法提取）"
         fi
@@ -334,6 +342,17 @@ PROMPT
         prompt+=$(cat "$vote_dir/answer-$n.md")
         prompt+=$'\n'
     done
+    # v0.4: 弃权清单附在 prompt 末尾，明确告知 LLM 不要把弃权者当共识
+    local has_abstain=0
+    for n in "${names[@]}"; do
+        if [[ -f "$vote_dir/abstain-$n.md" ]]; then
+            if (( ! has_abstain )); then
+                prompt+=$'\n\n---\n弃权者（不参与共识计算，仅供参考）：\n'
+                has_abstain=1
+            fi
+            prompt+="- ${n}: $(cat "$vote_dir/abstain-$n.md")"$'\n'
+        fi
+    done
 
     local out
     # shellcheck disable=SC2086
@@ -364,6 +383,8 @@ cmd_report() {
     echo "_投票 ID: $vote_id · 生成于 $(date -u +%Y-%m-%dT%H:%M:%SZ)_"
     echo
     for n in $names; do
+        # 弃权者不在主列表里，单列 ## 弃权 段
+        [[ -f "$vote_dir/abstain-$n.md" ]] && continue
         echo "## $n"
         if [[ -f "$vote_dir/answer-$n.md" ]]; then
             cat "$vote_dir/answer-$n.md"
@@ -372,6 +393,20 @@ cmd_report() {
         fi
         echo
     done
+
+    # v0.4: 弃权段
+    local any_abstain=0
+    for n in $names; do [[ -f "$vote_dir/abstain-$n.md" ]] && any_abstain=1; done
+    if (( any_abstain )); then
+        echo "## 弃权"
+        echo
+        for n in $names; do
+            if [[ -f "$vote_dir/abstain-$n.md" ]]; then
+                echo "- **$n**: $(cat "$vote_dir/abstain-$n.md")"
+            fi
+        done
+        echo
+    fi
 
     # v0.3-B: 优先 LLM 综合；失败回退到关键词段
     local all_answers

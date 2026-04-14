@@ -191,6 +191,39 @@ cmd_collect --id "$v7b_id" >/dev/null
 grep -q 'FALLBACK_HEURISTIC_ANSWER' "$v7b_dir/answer-cx.md" \
     && pass "marker 缺失时启发式回退仍可抽取" || fail "回退失败"
 
+section "Test 9: v0.4 abstain 语义"
+cmd_ask --question "abstain-q?" --participants cx >/dev/null
+v9_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
+v9_id=$(basename "$v9_dir")
+v9_start=$(printf "$VOTE_MARKER_START_TMPL" "$v9_id")
+v9_end=$(printf "$VOTE_MARKER_END_TMPL" "$v9_id")
+tmux() {
+    case "$1" in
+        has-session) return 0 ;;
+        capture-pane) cat <<EOF
+${v9_start}
+ABSTAIN: 信息不足难以判断
+${v9_end}
+❯
+EOF
+            ;;
+        *) return 0 ;;
+    esac
+}
+export -f tmux
+cmd_collect --id "$v9_id" >/dev/null
+
+[[ -f "$v9_dir/abstain-cx.md" ]] && pass "abstain 文件已落盘" || fail "abstain-cx.md 缺"
+[[ ! -f "$v9_dir/answer-cx.md" ]] && pass "不生成 answer 文件" || fail "误写了 answer"
+grep -q '信息不足难以判断' "$v9_dir/abstain-cx.md" && pass "弃权理由已存" \
+    || fail "理由: $(cat "$v9_dir/abstain-cx.md" 2>/dev/null)"
+[[ ! -f "$v9_dir/expect-cx.flag" ]] && pass "expect flag 已清理" || fail "expect flag 残留"
+
+# report 应含弃权段
+VOTE_LLM_DISABLE=1 out9=$(cmd_report --id "$v9_id")
+grep -q '^## 弃权' <<<"$out9" && pass "report 含 ## 弃权 段" || fail "缺弃权段"
+grep -q '信息不足难以判断' <<<"$out9" && pass "report 列出理由" || fail "理由未显示"
+
 section "Test 6: v0.3-B LLM 综合分析（mocked）"
 # 用前面 Test 1/2 已收到答案的 vote_dir（vote_id 取第一次 ask 的）
 # 直接 mock _llm_analyze_answers，不动 tmux
