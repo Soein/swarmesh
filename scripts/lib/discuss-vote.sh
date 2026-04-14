@@ -109,9 +109,33 @@ cmd_ask() {
     done
 
     info "   投票目录: $vote_dir"
-    info "   等待参与者回答后，执行:"
-    info "     discuss-vote.sh collect --id $vote_id"
-    info "     discuss-vote.sh report  --id $vote_id"
+
+    # v0.2.2: 后台自动 collect + report；VOTE_AUTO_COLLECT=0 关闭
+    if [[ "${VOTE_AUTO_COLLECT:-1}" == "1" ]]; then
+        local self="$0"
+        (
+            local elapsed=0
+            while (( elapsed < timeout )); do
+                sleep 5
+                elapsed=$((elapsed + 5))
+                "$self" collect --id "$vote_id" >/dev/null 2>&1
+                if ! ls "$vote_dir"/expect-*.flag >/dev/null 2>&1; then
+                    "$self" report --id "$vote_id" > "$vote_dir/report.md"
+                    break
+                fi
+            done
+            [[ -f "$vote_dir/report.md" ]] || "$self" report --id "$vote_id" > "$vote_dir/report.md"
+        ) >/dev/null 2>&1 &
+        disown 2>/dev/null || true
+        info "   ⏳ 后台自动收集中（每 5s 轮询，最长 ${timeout}s），完成后 report.md 自动生成"
+    else
+        info "   等待参与者回答后，执行:"
+        info "     discuss-vote.sh collect --id $vote_id"
+        info "     discuss-vote.sh report  --id $vote_id"
+    fi
+
+    # 把 vote_id 输出到 stdout 末行，便于脚本捕获
+    echo "$vote_id"
 }
 
 # 收集：从 watcher 写的 vote-capture 文件 / 手动 stash 读取回答

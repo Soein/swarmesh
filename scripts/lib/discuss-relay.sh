@@ -109,6 +109,7 @@ cmd_start() {
         --arg session "$DISCUSS_SESSION_NAME" \
         --arg project "$PROJECT_DIR" \
         --arg ts "$ts" \
+        --argjson max_turns "${SWARM_DISCUSS_MAX_TURNS:-${DISCUSS_MAX_TURNS:-20}}" \
         --argjson participants "$(jq -n --arg n "$name" --arg c "$cli" --arg t "$(_infer_cli_type "$cli")" --arg p "$pane_target" \
             '[{name:$n, cli:$c, cli_type:$t, pane:$p}]')" \
         '{
@@ -118,7 +119,7 @@ cmd_start() {
             project: $project,
             started_at: $ts,
             discuss: {
-                max_turns: 20,
+                max_turns: $max_turns,
                 turn_count: 0,
                 participants: $participants
             }
@@ -288,12 +289,21 @@ cmd_post() {
 _build_context_for() {
     local target="$1" current_content="$2" from="$3"
     local header
-    header=$(printf '【圆桌讨论 · 被 @ %s】\n主持：你和其他 AI 正在同一会话里讨论。以下是最近对话历史（每行 "turn/from: content"），最后一段是 @你 的消息，请正面回应、可继续 @ 其他人。' "${target}")
+    header=$(printf '【圆桌讨论 · 被 @ %s】\n主持：你和其他 AI 正在同一会话里讨论。请正面回应被 @ 你的内容，可继续 @ 其他人。' "${target}")
+
+    # 过去的 message（不含当前 — cmd_post 是先写 jsonl 再调本函数，
+    # 末条即"当前"，要剔掉。macOS head 不支持 -n -1，用 sed '$d'）
     local history
-    history=$(tail -n "$((DISCUSS_CONTEXT_TURNS * 2))" "$DISCUSS_LOG" \
-        | jq -r 'select(.type=="message") | "[turn \(.turn)] \(.from): \(.content)"' \
-        | tail -n "$DISCUSS_CONTEXT_TURNS")
-    printf '%b\n---历史---\n%s\n---当前---\n%s: %s\n' "$header" "$history" "$from" "$current_content"
+    history=$(jq -c 'select(.type=="message")' "$DISCUSS_LOG" 2>/dev/null \
+        | sed '$d' \
+        | jq -rs ".[-${DISCUSS_CONTEXT_TURNS}:][] | \"[turn \\(.turn)] \\(.from): \\(.content)\"" 2>/dev/null)
+
+    if [[ -z "$history" ]]; then
+        # 首轮：没有历史，直接给当前消息，不显示 "---历史---" 段
+        printf '%b\n---消息---\n%s: %s\n' "$header" "$from" "$current_content"
+    else
+        printf '%b\n---历史---\n%s\n---当前---\n%s: %s\n' "$header" "$history" "$from" "$current_content"
+    fi
 }
 
 # ---- tail ----------------------------------------------------------------
@@ -346,6 +356,16 @@ cmd_promote() {
 
     info "📄 brief 已生成: $brief"
     info "停止 discuss 并拉起 execute 模式 (profile=$profile)"
+
+    # 先停 watcher（promote 后 discuss session 不存在，watcher 会孤儿化）
+    local pid_file="$DISCUSS_DIR/watcher.pid"
+    if [[ -f "$pid_file" ]]; then
+        local wpid; wpid=$(cat "$pid_file" 2>/dev/null)
+        if [[ -n "$wpid" ]] && kill -0 "$wpid" 2>/dev/null; then
+            kill "$wpid" 2>/dev/null && info "已停 watcher (pid=$wpid)"
+        fi
+        rm -f "$pid_file" "${DISCUSS_DIR}/watcher.heartbeat"
+    fi
 
     tmux kill-session -t "$DISCUSS_SESSION_NAME" 2>/dev/null || true
 

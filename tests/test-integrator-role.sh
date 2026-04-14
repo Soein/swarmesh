@@ -83,7 +83,7 @@ for profile in minimal web-dev full-stack; do
 done
 
 section "Test 3: swarm-start 自动注入 integrator"
-start_snippet=$(sed -n '650,690p' "$ROOT_DIR/scripts/swarm-start.sh")
+start_snippet=$(cat "$ROOT_DIR/scripts/swarm-start.sh")
 assert_contains "swarm-start 含 integrator 注入逻辑" "$start_snippet" 'integrator'
 assert_contains "swarm-start 注入 quality/integrator.md" "$start_snippet" 'quality/integrator.md'
 

@@ -219,6 +219,7 @@ _extract_answer() {
         | grep -vE "Added \\.omx|workspace conventions|AGENTS\\.md|using-superpowers|SessionStart hook|UserPromptSubmit hook|\\.omx/state|\\.omx 当前" \
         | grep -vE "^user: @|^@cx |^@cl |^@gem " \
         | awk 'NF' \
+        | awk '!seen[$0]++' \
         | tail -"${DISCUSS_ANSWER_TAIL:-8}"
 }
 

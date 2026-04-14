@@ -309,6 +309,57 @@ format_status() {
         return
     fi
 
+    # discuss 模式：显示参与者 + 最近对话，跳过 execute 的角色表
+    local mode
+    mode=$(jq -r '.mode // "execute"' "$STATE_FILE" 2>/dev/null)
+    if [[ "$mode" == "discuss" ]]; then
+        if [[ "$use_color" == "true" ]]; then
+            echo -e "${COLOR_LABEL}模式:${COLOR_RESET} ${COLOR_VALUE}discuss${COLOR_RESET}"
+            echo -e "${COLOR_LABEL}参与者:${COLOR_RESET}"
+        else
+            echo "模式: discuss"
+            echo "参与者:"
+        fi
+        jq -r '.discuss.participants[]? | "  - \(.name) [\(.cli_type)] pane=\(.pane) cli=\(.cli)"' "$STATE_FILE" 2>/dev/null
+
+        local turn_count max_turns
+        turn_count=$(jq -r '.discuss.turn_count // 0' "$STATE_FILE" 2>/dev/null)
+        max_turns=$(jq -r '.discuss.max_turns // 20' "$STATE_FILE" 2>/dev/null)
+        echo ""
+        info "对话轮次: ${turn_count}/${max_turns}"
+
+        # watcher 状态
+        local watcher_pid_file="${RUNTIME_DIR}/discuss/watcher.pid"
+        if [[ -f "$watcher_pid_file" ]] && kill -0 "$(cat "$watcher_pid_file")" 2>/dev/null; then
+            local hb_age=0
+            local hb_file="${RUNTIME_DIR}/discuss/watcher.heartbeat"
+            [[ -f "$hb_file" ]] && hb_age=$(( $(date +%s) - $(cat "$hb_file") ))
+            info "watcher: 运行中 (pid $(cat "$watcher_pid_file"), 心跳 ${hb_age}s 前)"
+        else
+            info "watcher: 未运行（CLI 回答需手动 discuss-relay.sh post）"
+        fi
+
+        # 最近 8 条对话
+        local dlog="${RUNTIME_DIR}/discuss/session.jsonl"
+        if [[ -f "$dlog" ]]; then
+            echo ""
+            if [[ "$use_color" == "true" ]]; then
+                echo -e "${COLOR_LABEL}最近对话:${COLOR_RESET}"
+            else
+                echo "最近对话:"
+            fi
+            tail -8 "$dlog" | jq -r '
+                if .type=="message" then
+                    "  [turn \(.turn) · \(.from)\((.mentions | if length>0 then " → @\(.|join(",@"))" else "" end))] \(.content[:80])"
+                elif .type=="participant_join" then
+                    "  ➕ \(.name) 加入"
+                elif .type=="session_start" then
+                    "  ━ session 启动"
+                else "" end' 2>/dev/null
+        fi
+        return
+    fi
+
     # 显示角色状态
     if [[ "$use_color" == "true" ]]; then
         echo -e "${COLOR_LABEL}角色状态:${COLOR_RESET}"

@@ -18,34 +18,35 @@ jq -r '.discuss.participants | length' .swarm/runtime/state.json  # >= 2
 
 如果没有，先 `/swarm-chat` + `/swarm-chat-add`。
 
-### 2. 发起投票
+### 2. 发起投票（v0.2.2 自动收集）
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/lib/discuss-vote.sh" ask \
+VOTE_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/lib/discuss-vote.sh" ask \
     --question "<问题正文>" \
     [--participants cx,cl,gem] \
-    [--timeout 180]
+    [--timeout 180] | tail -1)
 ```
 
-记下返回的 `vote_id`（形如 `vote-1728000000-12345`）。
+后台每 5 秒自动 collect，所有人答完或超时自动出 `report.md`。无需手动干预。
 
-### 3. 等参与者回答（至少 30-60 秒，根据 CLI 响应速度）
-
-### 4. 收集回答
+### 3. 等 30-60 秒后查看报告
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/lib/discuss-vote.sh" collect --id <vote_id>
+cat .swarm/runtime/discuss/votes/$VOTE_ID/report.md
 ```
 
-未收齐可以多次执行。
-
-### 5. 生成汇总报告
+或主动出最新版：
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/lib/discuss-vote.sh" report --id <vote_id>
+"${CLAUDE_PLUGIN_ROOT}/scripts/lib/discuss-vote.sh" report --id $VOTE_ID
 ```
 
-输出 markdown，每人独立一节 + 合并关键词统计。可直接把结果展示给用户。
+### 高级：禁用自动收集
+
+```bash
+VOTE_AUTO_COLLECT=0 "${CLAUDE_PLUGIN_ROOT}/scripts/lib/discuss-vote.sh" ask --question "..."
+```
+然后手动调 `collect` + `report`。
 
 ## 典型用例
 
