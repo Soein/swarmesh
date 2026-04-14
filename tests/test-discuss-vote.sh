@@ -32,6 +32,10 @@ JSON
 export DISCUSS_VOTE_SKIP_LIB=1
 # 关掉后台自动 collect：测试不需要，且历史上 $0 指向测试脚本时触发过 fork 炸弹
 export VOTE_AUTO_COLLECT=0
+# v0.3-A: 稳定性阈值默认 2（需要 2 次连续 quiet+prompt 观测）。
+# Test 1-4 保留"单次 collect 即提交"的旧语义：设 1。
+# Test 5 明确测试 >1 阈值的新行为。
+export VOTE_STABLE_HITS=1
 # shellcheck disable=SC1090
 source "$VOTE"
 _ensure_runtime
@@ -105,6 +109,27 @@ section "Test 4: 指定 --participants 仅问子集"
 cmd_ask --question "Q2" --participants cx >/dev/null
 paste_count=$(wc -l < "$MOCK_PASTE" | tr -d ' ')
 [[ "$paste_count" == "1" ]] && pass "子集过滤：只 paste 1 次" || fail "paste: $paste_count"
+
+section "Test 5: v0.3-A watcher 式稳定性判定"
+# 用与 mock 一致的问题，保证 answer 一定能抽到；唯一变量是稳定性阈值。
+# 阈值 2：首次 collect 只应累计 quiet_hits，不应写 answer
+VOTE_STABLE_HITS=2 cmd_ask --question "Redis vs Dynamo?" --participants cx >/dev/null
+v5_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
+v5_id=$(basename "$v5_dir")
+VOTE_STABLE_HITS=2 cmd_collect --id "$v5_id" >/dev/null
+[[ ! -f "$v5_dir/answer-cx.md" ]] && pass "首次 collect 未立即提交（仅累计 1/2）" \
+    || fail "answer-cx.md 过早写入"
+[[ -f "$v5_dir/expect-cx.flag" ]] && pass "expect flag 保留" || fail "expect flag 被误删"
+
+# 第二次 collect：hash 不变 + 命中提示符 → quiet_hits=2 达阈值 → 写 answer
+VOTE_STABLE_HITS=2 cmd_collect --id "$v5_id" >/dev/null
+[[ -f "$v5_dir/answer-cx.md" ]] && pass "二次 collect 达阈值后提交" \
+    || fail "answer-cx.md 未在达阈值后写入"
+[[ ! -f "$v5_dir/expect-cx.flag" ]] && pass "expect flag 已清理" || fail "expect flag 未清"
+
+# watch-state.json 应存在，记录 quiet_hits
+ws="$v5_dir/.watch-state.json"
+[[ -f "$ws" ]] && pass ".watch-state.json 已落盘" || fail "watch-state 缺"
 
 printf '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
 if [[ $FAIL -eq 0 ]]; then

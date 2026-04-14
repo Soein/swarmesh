@@ -23,6 +23,11 @@ set -uo pipefail
 
 DISCUSS_SESSION_NAME="${DISCUSS_SESSION_NAME:-swarm-discuss}"
 VOTE_DEFAULT_TIMEOUT="${VOTE_DEFAULT_TIMEOUT:-120}"
+# v0.3-A: collect 稳定性阈值——需 N 次连续 "hash 不变 + 命中提示符" 才提交回答。
+# 默认 2，对应 ~10s 稳定（collect 5s 一次）。测试可设 1 绕过。
+VOTE_STABLE_HITS="${VOTE_STABLE_HITS:-2}"
+# 提示符模式：与 discuss-watcher.sh 对齐
+VOTE_PROMPT_PATTERNS="${VOTE_PROMPT_PATTERNS:-❯|›|Type your message|Use /skills|context left|esc to interrupt}"
 
 die()  { echo "[vote] ERROR: $*" >&2; exit 1; }
 info() { echo "[vote] $*"; }
@@ -140,9 +145,33 @@ cmd_ask() {
     echo "$vote_id"
 }
 
-# 收集：从 watcher 写的 vote-capture 文件 / 手动 stash 读取回答
-# v0.2：采用半自动——用户执行 collect 时从 pane capture 当前内容，
-# 尝试提取"问题 paste 之后到提示符之前"的增量作为回答
+# v0.3-A: watcher 式稳定性判定工具 ------------------------------------
+# 底部非空行命中提示符模式即视为"CLI 在等输入"
+_vote_hit_prompt() {
+    local raw="$1"
+    local tail; tail=$(printf '%s\n' "$raw" | sed '/^[[:space:]]*$/d' | tail -6)
+    grep -qE "$VOTE_PROMPT_PATTERNS" <<<"$tail"
+}
+
+# watch-state：记录每个参与者的 last_hash / quiet_hits
+_vote_ws_get() {
+    local vote_dir="$1" name="$2"
+    local ws="$vote_dir/.watch-state.json"
+    [[ -f "$ws" ]] || { echo "|0"; return; }
+    jq -r --arg n "$name" '.[$n] // {} | "\(.hash // "")|\(.quiet_hits // 0)"' "$ws" 2>/dev/null
+}
+
+_vote_ws_set() {
+    local vote_dir="$1" name="$2" hash="$3" quiet_hits="$4"
+    local ws="$vote_dir/.watch-state.json"
+    [[ -f "$ws" ]] || echo '{}' > "$ws"
+    local tmp; tmp=$(mktemp "$vote_dir/.ws.XXXXXX")
+    jq --arg n "$name" --arg h "$hash" --argjson q "$quiet_hits" \
+        '.[$n] = {hash:$h, quiet_hits:$q}' "$ws" > "$tmp" && mv "$tmp" "$ws"
+}
+
+# 收集：v0.3-A watcher 式稳定性判定——连续 VOTE_STABLE_HITS 次
+# "hash 不变 + 命中提示符" 才提交回答，规避答案打字中被截断
 cmd_collect() {
     local vote_id=""
     while [[ $# -gt 0 ]]; do
@@ -163,9 +192,34 @@ cmd_collect() {
     for n in $names; do
         local pane; pane=$(jq -r --arg n "$n" '.discuss.participants[] | select(.name==$n) | .pane' "$STATE_FILE")
         [[ -z "$pane" ]] && continue
+        # 已收到的跳过
+        [[ -f "$vote_dir/expect-$n.flag" ]] || continue
+
         # 抓整个 pane（后 500 行）
         local raw; raw=$(tmux capture-pane -t "${DISCUSS_SESSION_NAME}:${pane}" -p -S -500 2>/dev/null \
             | sed -E $'s/\x1b\\[[0-9;?]*[a-zA-Z]//g' | tr -d '\r')
+        [[ -n "$raw" ]] || continue
+
+        # v0.3-A: 稳定性判定——hash 不变 + 命中提示符连续 N 次才认定"答完"
+        local hash; hash=$(printf '%s' "$raw" | shasum -a 256 | awk '{print $1}')
+        local ws; ws=$(_vote_ws_get "$vote_dir" "$n")
+        local last_hash="${ws%%|*}" quiet_hits="${ws##*|}"
+        if _vote_hit_prompt "$raw"; then
+            if [[ "$hash" == "$last_hash" ]]; then
+                quiet_hits=$((quiet_hits + 1))
+            else
+                # 首次观测或内容变动后首次 prompt hit：重置为 1
+                quiet_hits=1
+            fi
+        else
+            quiet_hits=0
+        fi
+        _vote_ws_set "$vote_dir" "$n" "$hash" "$quiet_hits"
+        if (( quiet_hits < VOTE_STABLE_HITS )); then
+            info "⏳ @$n 尚未稳定 ($quiet_hits/$VOTE_STABLE_HITS)"
+            continue
+        fi
+
         # 截取问题之后的部分
         local answer
         answer=$(awk -v q="$question" '
