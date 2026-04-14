@@ -91,13 +91,14 @@ MARKER
 }
 
 cmd_ask() {
-    local question="" plist="" timeout="$VOTE_DEFAULT_TIMEOUT" min_responses=""
+    local question="" plist="" timeout="$VOTE_DEFAULT_TIMEOUT" min_responses="" rounds="1"
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --question)      question="$2";      shift 2 ;;
             --participants)  plist="$2";         shift 2 ;;
             --timeout)       timeout="$2";       shift 2 ;;
             --min-responses) min_responses="$2"; shift 2 ;;
+            --rounds)        rounds="$2";        shift 2 ;;
             *) die "ask: 未知参数 $1" ;;
         esac
     done
@@ -119,7 +120,7 @@ cmd_ask() {
         names_json=$(jq '.discuss.participants | map(.name)' "$STATE_FILE")
     fi
 
-    # 元数据（v0.4: min_responses 未传则存 null）
+    # 元数据（v0.4: min_responses 未传则存 null / v0.5.2: rounds + current_round）
     local mr_json="null"
     [[ -n "$min_responses" ]] && mr_json="$min_responses"
     jq -n \
@@ -128,7 +129,10 @@ cmd_ask() {
         --argjson participants "$names_json" \
         --argjson timeout "$timeout" \
         --argjson mr "$mr_json" \
-        '{id: "'"$vote_id"'", question:$question, ts:$ts, participants:$participants, timeout:$timeout, min_responses:$mr}' \
+        --argjson rounds "$rounds" \
+        '{id: "'"$vote_id"'", question:$question, ts:$ts,
+          participants:$participants, timeout:$timeout, min_responses:$mr,
+          rounds:$rounds, current_round:1}' \
         > "$vote_dir/meta.json"
 
     info "🗳  发起投票 $vote_id"
@@ -600,9 +604,84 @@ cmd_report() {
     fi
 }
 
+# v0.5.2: 多轮辩论 —— 归档当前轮 + paste 下轮指令 + 重置 expect ----
+cmd_next_round() {
+    local vote_id=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --id) vote_id="$2"; shift 2 ;;
+            *) die "next-round: 未知参数 $1" ;;
+        esac
+    done
+    [[ -n "$vote_id" ]] || die "--id 必需"
+
+    _ensure_runtime
+    local vote_dir="$VOTE_ROOT/$vote_id"
+    [[ -d "$vote_dir" ]] || die "vote 目录不存在: $vote_dir"
+
+    local rounds cur
+    rounds=$(jq -r '.rounds // 1' "$vote_dir/meta.json")
+    cur=$(jq -r '.current_round // 1' "$vote_dir/meta.json")
+
+    (( cur >= rounds )) && die "已是最后轮 (current=${cur}/max=${rounds})"
+
+    local question; question=$(jq -r '.question' "$vote_dir/meta.json")
+    local names; names=$(jq -r '.participants[]' "$vote_dir/meta.json")
+
+    # 归档当前轮到 round<cur>/
+    local arc="$vote_dir/round${cur}"
+    mkdir -p "$arc"
+    local n
+    for n in $names; do
+        for f in "answer-$n.md" "abstain-$n.md" "meta-$n.json"; do
+            [[ -f "$vote_dir/$f" ]] && mv "$vote_dir/$f" "$arc/$f"
+        done
+        # watch-state 也重置（下轮重新判稳定性）
+        rm -f "$vote_dir/.watch-state.json"
+    done
+    # 把上一轮的 report 也归档（若存在）
+    [[ -f "$vote_dir/report-r${cur}.md" ]] && mv "$vote_dir/report-r${cur}.md" "$arc/report.md"
+
+    # 构造下轮 paste 内容：附上一轮立场
+    local ctx_block
+    ctx_block=$(cat <<CTX
+
+【第 $((cur + 1)) / ${rounds} 轮 · 辩论】
+上一轮各参与者的立场如下（请参考后给出你的**最终**立场，可维持或修正）：
+CTX
+)
+    for n in $names; do
+        local n_answer="" n_stance="other"
+        if [[ -f "$arc/answer-$n.md" ]]; then
+            n_answer=$(cat "$arc/answer-$n.md")
+            [[ -f "$arc/meta-$n.json" ]] && n_stance=$(jq -r '.stance // "other"' "$arc/meta-$n.json")
+            ctx_block+=$'\n\n'"- @${n} [stance=${n_stance}]: ${n_answer}"
+        elif [[ -f "$arc/abstain-$n.md" ]]; then
+            ctx_block+=$'\n\n'"- @${n} [弃权]: $(cat "$arc/abstain-$n.md")"
+        fi
+    done
+
+    # paste 给每个参与者（复用 _paste_isolated，不广播）
+    local pane cli_type
+    for n in $names; do
+        pane=$(jq -r --arg n "$n" '.discuss.participants[] | select(.name==$n) | .pane' "$STATE_FILE")
+        cli_type=$(jq -r --arg n "$n" '.discuss.participants[] | select(.name==$n) | .cli_type' "$STATE_FILE")
+        [[ -z "$pane" ]] && continue
+        _paste_isolated "$pane" "${question}${ctx_block}" "$cli_type" "$vote_id"
+        info "   ➡ R$((cur + 1)) paste 到 @$n"
+        printf '%s' "$n" > "$vote_dir/expect-$n.flag"
+    done
+
+    # 推进 current_round
+    local tmp; tmp=$(mktemp "$vote_dir/.meta.XXXXXX")
+    jq --argjson c "$((cur + 1))" '.current_round = $c' "$vote_dir/meta.json" > "$tmp" && mv "$tmp" "$vote_dir/meta.json"
+    info "🔁 已进入第 $((cur + 1)) / ${rounds} 轮"
+}
+
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     case "${1:-}" in
-        ask)     shift; cmd_ask     "$@" ;;
+        ask)        shift; cmd_ask        "$@" ;;
+        next-round) shift; cmd_next_round "$@" ;;
         collect) shift; cmd_collect "$@" ;;
         report)  shift; cmd_report  "$@" ;;
         help|-h|--help|"")

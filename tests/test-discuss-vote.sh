@@ -403,6 +403,45 @@ _llm_extract_answer() {
 }
 export -f _llm_extract_answer
 
+section "Test 13: v0.5.2 多轮辩论——next-round 归档 + 重置"
+cmd_ask --question "debate-q?" --participants cx,cl --rounds 2 >/dev/null
+v13_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
+v13_id=$(basename "$v13_dir")
+# meta.json 应记 rounds=2, current_round=1
+jq -e '.rounds == 2' "$v13_dir/meta.json" >/dev/null \
+    && pass "meta.json rounds=2" || fail "rounds 字段: $(jq -r .rounds "$v13_dir/meta.json")"
+jq -e '.current_round == 1' "$v13_dir/meta.json" >/dev/null \
+    && pass "meta.json current_round=1" || fail "current_round"
+
+# 跑完第 1 轮（默认 LLM mock 都 answer）
+cmd_collect --id "$v13_id" >/dev/null
+[[ -f "$v13_dir/answer-cx.md" ]] && [[ -f "$v13_dir/answer-cl.md" ]] \
+    && pass "Round 1 两人已答" || fail "R1 答案缺"
+
+# next-round：归档 r1，重置 r2
+cmd_next_round --id "$v13_id" >/dev/null
+
+[[ -d "$v13_dir/round1" ]] && pass "round1/ 目录已创建" || fail "归档目录缺"
+[[ -f "$v13_dir/round1/answer-cx.md" ]] && pass "cx R1 答案归档" || fail
+[[ -f "$v13_dir/round1/answer-cl.md" ]] && pass "cl R1 答案归档" || fail
+[[ ! -f "$v13_dir/answer-cx.md" ]] && pass "顶层 answer-cx.md 被清" || fail "R1 未清理"
+[[ -f "$v13_dir/expect-cx.flag" ]] && [[ -f "$v13_dir/expect-cl.flag" ]] \
+    && pass "R2 expect flags 已重置" || fail "expect 未重置"
+jq -e '.current_round == 2' "$v13_dir/meta.json" >/dev/null \
+    && pass "current_round 推进到 2" || fail "current_round"
+
+# paste 到了 cx/cl（mock 记录）
+paste_after=$(wc -l <"$MOCK_PASTE" | tr -d ' ')
+[[ "$paste_after" -ge "$((paste_count + 2))" ]] && pass "R2 paste 2 次" || fail "paste 次数 $paste_after"
+
+# 超过 max rounds 时 next-round 应拒绝（die → 非 0 退出）
+# 必须用 subshell 包装，否则 die 会终结 test 脚本自身
+# 注意 pipefail 下 pipe 左侧 die 返回 1 会污染整条 pipe 的退出码，
+# 所以先捕获 stderr 文本再 grep
+_r13_out=$( { cmd_next_round --id "$v13_id" 2>&1 || true; } )
+grep -qi '已是最后轮\|max.*rounds' <<<"$_r13_out" \
+    && pass "超最大轮数拒绝" || fail "未拒绝超轮（输出: $_r13_out）"
+
 section "Test 6: v0.3-B LLM 综合分析（mocked）"
 # 用前面 Test 1/2 已收到答案的 vote_dir（vote_id 取第一次 ask 的）
 # 直接 mock _llm_analyze_answers，不动 tmux
