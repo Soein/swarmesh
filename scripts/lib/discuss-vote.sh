@@ -111,8 +111,10 @@ cmd_ask() {
     info "   投票目录: $vote_dir"
 
     # v0.2.2: 后台自动 collect + report；VOTE_AUTO_COLLECT=0 关闭
+    # 用 BASH_SOURCE[0] 锁定本脚本；用 $0 会在被 source 时指向调用方，
+    # 如果调用方是测试脚本，就会触发"自己拉起自己"的递归 fork 炸弹
     if [[ "${VOTE_AUTO_COLLECT:-1}" == "1" ]]; then
-        local self="$0"
+        local self="${BASH_SOURCE[0]}"
         (
             local elapsed=0
             while (( elapsed < timeout )); do

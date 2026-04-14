@@ -27,7 +27,9 @@ if [[ -z "${DISCUSS_RELAY_SKIP_LIB:-}" ]]; then
 fi
 
 # ---- 可配置 --------------------------------------------------------------
-DISCUSS_SESSION_NAME="${DISCUSS_SESSION_NAME:-swarm-discuss}"
+# DISCUSS_SESSION_NAME 默认空串：在 _ensure_runtime 里按 PROJECT_DIR 派生
+# 用户显式设 env 变量仍然生效（覆盖派生）
+DISCUSS_SESSION_NAME="${DISCUSS_SESSION_NAME:-}"
 DISCUSS_MAX_TURNS="${SWARM_DISCUSS_MAX_TURNS:-20}"
 DISCUSS_CONTEXT_TURNS="${SWARM_DISCUSS_CONTEXT_TURNS:-10}"
 DISCUSS_STARTUP_WAIT="${SWARM_DISCUSS_STARTUP_WAIT:-3}"
@@ -44,6 +46,10 @@ _ensure_runtime() {
     DISCUSS_DIR="${RUNTIME_DIR}/discuss"
     DISCUSS_LOG="${DISCUSS_DIR}/session.jsonl"
     mkdir -p "$DISCUSS_DIR"
+
+    # 按项目派生 session 名（消除两项目同时 discuss 时撞名），用户 env 覆盖优先
+    [[ -z "$DISCUSS_SESSION_NAME" ]] && \
+        DISCUSS_SESSION_NAME="swarm-discuss-$(basename "$PROJECT_DIR")"
 }
 
 # 以 mktemp 落盘，再 paste-buffer 到目标 pane

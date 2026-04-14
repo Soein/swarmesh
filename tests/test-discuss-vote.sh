@@ -30,6 +30,8 @@ cat > "$STATE" <<'JSON'
 JSON
 
 export DISCUSS_VOTE_SKIP_LIB=1
+# 关掉后台自动 collect：测试不需要，且历史上 $0 指向测试脚本时触发过 fork 炸弹
+export VOTE_AUTO_COLLECT=0
 # shellcheck disable=SC1090
 source "$VOTE"
 _ensure_runtime

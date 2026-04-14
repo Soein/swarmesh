@@ -104,6 +104,46 @@ section "Test 7: list 列出参与者"
 listed=$(cmd_list 2>/dev/null | wc -l | tr -d ' ')
 [[ "$listed" == "2" ]] && pass "list 输出 2 行" || fail "list 输出 $listed 行"
 
+section "Test 8: DISCUSS_SESSION_NAME 按项目派生（v0.3-D，零子 shell）"
+# 保存当前 state；用函数调用 + 手动变量还原，不 fork 任何子进程
+_orig_PROJECT_DIR="$PROJECT_DIR"
+_orig_DISCUSS_SESSION_NAME="${DISCUSS_SESSION_NAME:-}"
+_orig_RUNTIME_DIR="${RUNTIME_DIR:-}"
+_orig_STATE_FILE="${STATE_FILE:-}"
+_orig_DISCUSS_DIR="${DISCUSS_DIR:-}"
+_orig_DISCUSS_LOG="${DISCUSS_LOG:-}"
+
+# 8.1 proj-a 派生
+mkdir -p "$TEST_ROOT/proj-a/.swarm/runtime/discuss"
+PROJECT_DIR="$TEST_ROOT/proj-a"
+DISCUSS_SESSION_NAME=""
+_ensure_runtime
+name_a="$DISCUSS_SESSION_NAME"
+[[ "$name_a" == "swarm-discuss-proj-a" ]] && pass "proj-a 派生为 $name_a" || fail "proj-a 派生错: '$name_a'"
+
+# 8.2 proj-b 派生
+mkdir -p "$TEST_ROOT/proj-b/.swarm/runtime/discuss"
+PROJECT_DIR="$TEST_ROOT/proj-b"
+DISCUSS_SESSION_NAME=""
+_ensure_runtime
+name_b="$DISCUSS_SESSION_NAME"
+[[ "$name_b" == "swarm-discuss-proj-b" ]] && pass "proj-b 派生为 $name_b" || fail "proj-b 派生错: '$name_b'"
+[[ "$name_a" != "$name_b" ]] && pass "两项目 session 名不同" || fail "两项目派生相同"
+
+# 8.3 env 覆盖优先
+PROJECT_DIR="$TEST_ROOT/proj-a"
+DISCUSS_SESSION_NAME="my-custom"
+_ensure_runtime
+[[ "$DISCUSS_SESSION_NAME" == "my-custom" ]] && pass "env 变量覆盖派生" || fail "env 覆盖失效: '$DISCUSS_SESSION_NAME'"
+
+# 还原
+PROJECT_DIR="$_orig_PROJECT_DIR"
+DISCUSS_SESSION_NAME="$_orig_DISCUSS_SESSION_NAME"
+RUNTIME_DIR="$_orig_RUNTIME_DIR"
+STATE_FILE="$_orig_STATE_FILE"
+DISCUSS_DIR="$_orig_DISCUSS_DIR"
+DISCUSS_LOG="$_orig_DISCUSS_LOG"
+
 printf '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
 if [[ $FAIL -eq 0 ]]; then
     printf '\033[32m✅ discuss-relay: %d/%d tests passed\033[0m\n' "$PASS" "$((PASS+FAIL))"
