@@ -49,12 +49,15 @@ VOTE_AUTO_COLLECT=0 "${CLAUDE_PLUGIN_ROOT}/scripts/lib/discuss-vote.sh" ask --qu
 ```
 然后手动调 `collect` + `report`。
 
-## v0.4 表决语义
+## v0.5 表决语义（LLM-first 架构）
 
-- **Marker 抽取**：paste 时要求 CLI 把最终答案包在 `<<<VOTE_<id>_START>>>` / `<<<VOTE_<id>_END>>>` 之间。抽取优先读 marker 内文本；CLI 不听话时自动回退到 v0.3 启发式路径。
-- **弃权 (ABSTAIN)**：参与者在 marker 内只写 `ABSTAIN: <理由>` 即表示弃权。产物落在 `abstain-<name>.md`（不记入共识计算），report 单列"## 弃权"段。
-- **Quorum**：`--min-responses N` 要求至少 N 个实质回答；未达时 report 顶部加"⚠️ 投票未达法定数"警告，LLM 综合 prompt 同步注明。
-- **回写 discuss jsonl**：若当前在 discuss session 中，report 生成后会追加一行 `type=vote_report` 到 `runtime/discuss/session.jsonl`。只落盘不 paste，promote 默认忽略（仅 type=message）。
+- **LLM-assisted 抽取**：v0.4 的 marker/启发式**彻底删除**。collect 稳定性达标后，每人 pane 原文并发喂给 headless CLI，返回 `{status, content, abstain_reason, confidence, stance}` 结构化 JSON。CLI 不可用即报错，不再有降级路径。
+- **弃权（ABSTAIN）**：由 LLM 智能识别（任何语言、任何变体），不再依赖 `ABSTAIN:` 硬前缀。
+- **Stance 分组**：LLM 给每个答案打 `pro/con/neutral/other` 标签，report 按立场分组展示。
+- **Quorum**：`--min-responses N` 要求至少 N 个实质回答（弃权不算）；未达时 report 顶部加"⚠️ 投票未达法定数"。
+- **多轮辩论**：`--rounds N` + `next-round` 子命令，第 2 轮起 paste 附上一轮各人立场，要求"维持原判或根据对方论点修正"。
+- **vote → discuss jsonl 回写**：`type=vote_report` 事件，promote 默认忽略。
+- **UUID vote_id + list/cancel**：同秒并发不碰撞，历史可查可撤。
 
 ## 环境变量
 
@@ -66,8 +69,12 @@ VOTE_AUTO_COLLECT=0 "${CLAUDE_PLUGIN_ROOT}/scripts/lib/discuss-vote.sh" ask --qu
 | `VOTE_LLM_DISABLE` | 0 | 1 跳过 LLM 综合，直接用关键词段 |
 | `VOTE_LLM_CMD` | 自动探测 | 指定 headless CLI，如 `claude -p` / `codex exec` / `gemini -p` |
 | `VOTE_LLM_TIMEOUT` | 90 | LLM 综合调用超时秒数 |
-| `VOTE_MARKER_START_TMPL` | `<<<VOTE_%s_START>>>` | marker 起始模板（`%s`=vote_id） |
+| `VOTE_MARKER_START_TMPL` | `<<<VOTE_%s_START>>>` | marker 起始模板（v0.5 仅作 CLI 软提示） |
 | `VOTE_MARKER_END_TMPL` | `<<<VOTE_%s_END>>>` | marker 结束模板 |
+| `VOTE_LLM_EXTRACT_CMD` | 自动探测 | LLM extract 阶段的 headless CLI（默认复用 `VOTE_LLM_CMD`） |
+| `VOTE_LLM_EXTRACT_TIMEOUT` | 30 | LLM extract 单次调用超时秒数 |
+| `VOTE_LLM_EXTRACT_PARALLEL` | pending 人数 | LLM extract 并发度 |
+| `VOTE_LLM_EXTRACT_MAX` | 10 | LLM extract 并发硬上限（防资源挤爆） |
 
 ## 典型用例
 
@@ -109,6 +116,47 @@ VOTE_ID=$(discuss-vote.sh ask \
 # 投票完成后，tail -1 .swarm/runtime/discuss/session.jsonl
 # 可见 {"type":"vote_report","vote_id":"...","answered":[...],...}
 # 后续 /swarm-promote 不受干扰（默认仅收录 type=message）
+```
+
+### 5. 多轮辩论（v0.5）
+
+```bash
+VOTE_ID=$(discuss-vote.sh ask --question "方案 A 还是 B？" \
+    --participants cx,cl,gm --rounds 3 | tail -1)
+
+# Round 1
+discuss-vote.sh collect --id $VOTE_ID      # 等各人独立答
+discuss-vote.sh report  --id $VOTE_ID      # 看 R1 综合
+discuss-vote.sh next-round --id $VOTE_ID   # 归档 R1 → paste R2 指令
+
+# Round 2
+discuss-vote.sh collect --id $VOTE_ID      # 各人看了别人答案后修正
+discuss-vote.sh report  --id $VOTE_ID      # R2 综合（有无立场变化）
+
+# Round 3 同理
+```
+
+产物组织：
+```
+runtime/discuss/votes/$VOTE_ID/
+    meta.json              # 含 current_round + max rounds
+    answer-cx.md           # 当前轮答案（最新）
+    meta-cx.json           # 当前轮 stance/confidence
+    round1/                # R1 归档
+        answer-cx.md
+        meta-cx.json
+        report.md
+    round2/                # R2 归档（R3 开始时归档）
+        ...
+```
+
+### 6. 查看 / 取消
+
+```bash
+discuss-vote.sh list                      # 列历史投票
+# vote-1712... [R2/3 | 2/3 答]  方案 A 还是 B？
+
+discuss-vote.sh cancel --id <vote-id>     # 取消并删 vote 目录
 ```
 
 $ARGUMENTS
