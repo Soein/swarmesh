@@ -33,6 +33,10 @@ VOTE_PROMPT_PATTERNS="${VOTE_PROMPT_PATTERNS:-❯|›|Type your message|Use /ski
 VOTE_LLM_DISABLE="${VOTE_LLM_DISABLE:-0}"
 VOTE_LLM_CMD="${VOTE_LLM_CMD:-}"
 VOTE_LLM_TIMEOUT="${VOTE_LLM_TIMEOUT:-90}"
+# v0.4: marker 锚点模板。%s 占位为 vote_id，保证每轮 marker 唯一、
+# 不会和历史 pane scrollback 里的残留 marker 撞上。
+VOTE_MARKER_START_TMPL="${VOTE_MARKER_START_TMPL:-<<<VOTE_%s_START>>>}"
+VOTE_MARKER_END_TMPL="${VOTE_MARKER_END_TMPL:-<<<VOTE_%s_END>>>}"
 
 die()  { echo "[vote] ERROR: $*" >&2; exit 1; }
 info() { echo "[vote] $*"; }
@@ -55,9 +59,24 @@ _ensure_runtime() {
 }
 
 _paste_isolated() {
-    local pane="$1" question="$2" cli_type="$3"
+    local pane="$1" question="$2" cli_type="$3" vote_id="${4:-}"
+    local start_tag="" end_tag="" marker_block=""
+    if [[ -n "$vote_id" ]]; then
+        start_tag=$(printf "$VOTE_MARKER_START_TMPL" "$vote_id")
+        end_tag=$(printf "$VOTE_MARKER_END_TMPL" "$vote_id")
+        marker_block=$(cat <<MARKER
+
+请将你的最终答案完整包在以下两行之间（不要加 markdown 代码块装饰）：
+$start_tag
+...你的答案正文...
+$end_tag
+
+若信息不足或无法判断，在 marker 内仅写一行：ABSTAIN: <简短理由>
+MARKER
+)
+    fi
     local header
-    header=$(printf '【独立投票 · 请给出你的独立判断，不参考任何其他人】\n问题：%s' "$question")
+    header=$(printf '【独立投票 · 请给出你的独立判断，不参考任何其他人】\n问题：%s%s' "$question" "$marker_block")
     local tmpf; tmpf=$(mktemp "${RUNTIME_DIR}/.vote-paste-XXXXXX")
     printf '%s' "$header" > "$tmpf"
     SESSION_NAME="$DISCUSS_SESSION_NAME" _pane_locked_paste_enter "$pane" "$tmpf" "$cli_type"
@@ -112,7 +131,7 @@ cmd_ask() {
         pane=$(jq -r --arg n "$n" '.discuss.participants[] | select(.name==$n) | .pane' "$STATE_FILE")
         cli_type=$(jq -r --arg n "$n" '.discuss.participants[] | select(.name==$n) | .cli_type' "$STATE_FILE")
         [[ -z "$pane" ]] && { info "   ⚠ $n 不在 participants，跳过"; continue; }
-        _paste_isolated "$pane" "$question" "$cli_type"
+        _paste_isolated "$pane" "$question" "$cli_type" "$vote_id"
         info "   ➡ 已 paste 到 @$n (pane $pane)"
         # 登记预期回答
         printf '%s' "$n" > "$vote_dir/expect-$n.flag"
