@@ -244,15 +244,29 @@ cmd_collect() {
             continue
         fi
 
-        # 截取问题之后的部分
-        local answer
-        answer=$(awk -v q="$question" '
-            BEGIN{found=0}
-            { if (!found && index($0, q)) { found=1; next }
-              if (found) print }
-        ' <<<"$raw" | grep -vE '❯|›|^─+$|^╭|^│|^╰|gpt-.*·|\[Opus|\[Sonnet|上下文 |用量 |本周 |⏱️|/private/tmp|Working.*esc to interrupt|^[[:space:]]*$' \
-            | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
-            | awk 'NF')
+        # v0.4: 优先 marker 抽取；marker 缺失时回退到启发式
+        local start_tag end_tag
+        start_tag=$(printf "$VOTE_MARKER_START_TMPL" "$vote_id")
+        end_tag=$(printf "$VOTE_MARKER_END_TMPL" "$vote_id")
+        local answer=""
+        if grep -qF "$start_tag" <<<"$raw" && grep -qF "$end_tag" <<<"$raw"; then
+            answer=$(awk -v s="$start_tag" -v e="$end_tag" '
+                index($0, s) { found=1; next }
+                index($0, e) { found=0 }
+                found
+            ' <<<"$raw" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | awk 'NF')
+        fi
+        if [[ -z "$answer" ]]; then
+            [[ -n "$start_tag" ]] && info "⚠ @$n 未用 marker，回退启发式抽取"
+            # 启发式：截取问题之后的部分（v0.3 原逻辑保留做 fallback）
+            answer=$(awk -v q="$question" '
+                BEGIN{found=0}
+                { if (!found && index($0, q)) { found=1; next }
+                  if (found) print }
+            ' <<<"$raw" | grep -vE '❯|›|^─+$|^╭|^│|^╰|gpt-.*·|\[Opus|\[Sonnet|上下文 |用量 |本周 |⏱️|/private/tmp|Working.*esc to interrupt|^[[:space:]]*$' \
+                | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+                | awk 'NF')
+        fi
         if [[ -n "$answer" ]]; then
             printf '%s' "$answer" > "$vote_dir/answer-$n.md"
             rm -f "$vote_dir/expect-$n.flag"

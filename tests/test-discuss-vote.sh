@@ -133,6 +133,64 @@ VOTE_STABLE_HITS=2 cmd_collect --id "$v5_id" >/dev/null
 ws="$v5_dir/.watch-state.json"
 [[ -f "$ws" ]] && pass ".watch-state.json 已落盘" || fail "watch-state 缺"
 
+section "Test 7: v0.4 marker 抽取 + 回退"
+# 准备一个 vote（VOTE_STABLE_HITS=1 单次即提交）
+cmd_ask --question "marker-q?" --participants cx >/dev/null
+v7_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
+v7_id=$(basename "$v7_dir")
+v7_start=$(printf "$VOTE_MARKER_START_TMPL" "$v7_id")
+v7_end=$(printf "$VOTE_MARKER_END_TMPL" "$v7_id")
+
+# 覆盖 tmux mock，返回 marker 包裹的回答（上下加装饰噪音）
+tmux() {
+    case "$1" in
+        has-session) return 0 ;;
+        capture-pane) cat <<EOF
+garbage preamble noise ━━━━━━━━━━
+│ gpt-4o · 2k tokens
+${v7_start}
+MARKER_CLEAN_ANSWER line1
+MARKER_CLEAN_ANSWER line2
+${v7_end}
+装饰行 · ⏱️ 1.2s
+❯
+EOF
+            ;;
+        *) return 0 ;;
+    esac
+}
+export -f tmux
+cmd_collect --id "$v7_id" >/dev/null
+
+[[ -f "$v7_dir/answer-cx.md" ]] && pass "marker 抽取写入 answer" || fail "answer 缺"
+grep -q 'MARKER_CLEAN_ANSWER line1' "$v7_dir/answer-cx.md" && pass "marker 内容被抽出" \
+    || fail "marker 内容: $(cat "$v7_dir/answer-cx.md" 2>/dev/null)"
+! grep -q '<<<VOTE' "$v7_dir/answer-cx.md" && pass "marker 行被剥离" || fail "marker 残留"
+! grep -q 'garbage preamble\|gpt-4o\|装饰行' "$v7_dir/answer-cx.md" && pass "marker 外噪音被隔离" \
+    || fail "噪音泄漏"
+
+# 回退路径：marker 不存在时仍能用 v0.3 启发式抽取
+cmd_ask --question "Redis vs Dynamo?" --participants cx >/dev/null
+v7b_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
+v7b_id=$(basename "$v7b_dir")
+tmux() {
+    case "$1" in
+        has-session) return 0 ;;
+        capture-pane) cat <<EOF
+【独立投票】
+问题：Redis vs Dynamo?
+FALLBACK_HEURISTIC_ANSWER
+❯
+EOF
+            ;;
+        *) return 0 ;;
+    esac
+}
+export -f tmux
+cmd_collect --id "$v7b_id" >/dev/null
+grep -q 'FALLBACK_HEURISTIC_ANSWER' "$v7b_dir/answer-cx.md" \
+    && pass "marker 缺失时启发式回退仍可抽取" || fail "回退失败"
+
 section "Test 6: v0.3-B LLM 综合分析（mocked）"
 # 用前面 Test 1/2 已收到答案的 vote_dir（vote_id 取第一次 ask 的）
 # 直接 mock _llm_analyze_answers，不动 tmux
