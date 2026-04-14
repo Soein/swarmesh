@@ -28,6 +28,11 @@ VOTE_DEFAULT_TIMEOUT="${VOTE_DEFAULT_TIMEOUT:-120}"
 VOTE_STABLE_HITS="${VOTE_STABLE_HITS:-2}"
 # 提示符模式：与 discuss-watcher.sh 对齐
 VOTE_PROMPT_PATTERNS="${VOTE_PROMPT_PATTERNS:-❯|›|Type your message|Use /skills|context left|esc to interrupt}"
+# v0.3-B: LLM 综合分析。VOTE_LLM_DISABLE=1 关闭，VOTE_LLM_CMD 覆盖 CLI 选择，
+# VOTE_LLM_TIMEOUT 秒数（默认 90）。
+VOTE_LLM_DISABLE="${VOTE_LLM_DISABLE:-0}"
+VOTE_LLM_CMD="${VOTE_LLM_CMD:-}"
+VOTE_LLM_TIMEOUT="${VOTE_LLM_TIMEOUT:-90}"
 
 die()  { echo "[vote] ERROR: $*" >&2; exit 1; }
 info() { echo "[vote] $*"; }
@@ -239,6 +244,71 @@ cmd_collect() {
     done
 }
 
+# v0.3-B: 跨平台 timeout ----------------------------------------------
+_vote_exec_timeout() {
+    local tout="$1"; shift
+    if command -v gtimeout >/dev/null 2>&1; then gtimeout "$tout" "$@"
+    elif command -v timeout  >/dev/null 2>&1; then timeout  "$tout" "$@"
+    else perl -e 'alarm shift @ARGV; exec @ARGV' "$tout" "$@"; fi
+}
+
+# v0.3-B: 喂 LLM 做共识/分歧综合 --------------------------------------
+# 入参: question vote_dir name1 name2 ...
+# 成功：stdout 输出 markdown 片段（已含 ## 共识点 等小节）
+# 失败：return 1（无 CLI、超时、空输出）
+_llm_analyze_answers() {
+    local question="$1" vote_dir="$2"; shift 2
+    local names=("$@")
+    [[ "$VOTE_LLM_DISABLE" == "1" ]] && return 1
+
+    local llm_cmd="$VOTE_LLM_CMD"
+    if [[ -z "$llm_cmd" ]]; then
+        if   command -v claude >/dev/null 2>&1; then llm_cmd="claude -p"
+        elif command -v codex  >/dev/null 2>&1; then llm_cmd="codex exec"
+        elif command -v gemini >/dev/null 2>&1; then llm_cmd="gemini -p"
+        else return 1
+        fi
+    fi
+
+    local prompt
+    prompt=$(cat <<PROMPT
+以下是 ${#names[@]} 位独立参与者针对同一问题的回答。
+请做结构化综合，严格按如下 markdown 段落输出（不要别的小节、不要寒暄、不要复述问题）：
+
+## 共识点
+（所有回答中可明确归纳的共同结论，列表形式）
+
+## 分歧点
+（存在明显矛盾或取舍分歧之处，逐点列出各方立场）
+
+## 各方立场摘要
+（每个参与者 1–2 句提纯）
+
+## 建议决策
+（基于以上综合，给出一个明确、可执行的结论或建议）
+
+---
+问题：$question
+
+---
+回答：
+PROMPT
+)
+    local n
+    for n in "${names[@]}"; do
+        [[ -f "$vote_dir/answer-$n.md" ]] || continue
+        prompt+=$'\n### '"$n"$'\n'
+        prompt+=$(cat "$vote_dir/answer-$n.md")
+        prompt+=$'\n'
+    done
+
+    local out
+    # shellcheck disable=SC2086
+    out=$(printf '%s' "$prompt" | _vote_exec_timeout "$VOTE_LLM_TIMEOUT" $llm_cmd 2>/dev/null) || return 1
+    [[ -n "$out" ]] || return 1
+    printf '%s' "$out"
+}
+
 cmd_report() {
     local vote_id=""
     while [[ $# -gt 0 ]]; do
@@ -270,15 +340,25 @@ cmd_report() {
         echo
     done
 
-    # 简版共识/分歧分析（纯关键词提取，不保证准确；v0.3 交 LLM）
+    # v0.3-B: 优先 LLM 综合；失败回退到关键词段
     local all_answers
     all_answers=$(for n in $names; do [[ -f "$vote_dir/answer-$n.md" ]] && cat "$vote_dir/answer-$n.md"; done)
     if [[ -n "$all_answers" ]]; then
-        echo "## 简易关键词统计（所有回答合并）"
-        echo
-        echo '```'
-        printf '%s' "$all_answers" | tr -c '[:alpha:]' '\n' | awk 'length > 3' | sort | uniq -c | sort -rn | head -15
-        echo '```'
+        local name_arr=()
+        for n in $names; do name_arr+=("$n"); done
+        local llm_out
+        if llm_out=$(_llm_analyze_answers "$question" "$vote_dir" "${name_arr[@]}"); then
+            echo "## 综合分析（LLM）"
+            echo
+            echo "$llm_out"
+            echo
+        else
+            echo "## 简易关键词统计（所有回答合并·LLM 不可用）"
+            echo
+            echo '```'
+            printf '%s' "$all_answers" | tr -c '[:alpha:]' '\n' | awk 'length > 3' | sort | uniq -c | sort -rn | head -15
+            echo '```'
+        fi
     fi
 }
 

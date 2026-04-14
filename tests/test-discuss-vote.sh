@@ -36,6 +36,8 @@ export VOTE_AUTO_COLLECT=0
 # Test 1-4 保留"单次 collect 即提交"的旧语义：设 1。
 # Test 5 明确测试 >1 阈值的新行为。
 export VOTE_STABLE_HITS=1
+# v0.3-B: 默认禁用 LLM 综合（测试无外部 CLI 调用），Test 6 单独 mock
+export VOTE_LLM_DISABLE=1
 # shellcheck disable=SC1090
 source "$VOTE"
 _ensure_runtime
@@ -130,6 +132,22 @@ VOTE_STABLE_HITS=2 cmd_collect --id "$v5_id" >/dev/null
 # watch-state.json 应存在，记录 quiet_hits
 ws="$v5_dir/.watch-state.json"
 [[ -f "$ws" ]] && pass ".watch-state.json 已落盘" || fail "watch-state 缺"
+
+section "Test 6: v0.3-B LLM 综合分析（mocked）"
+# 用前面 Test 1/2 已收到答案的 vote_dir（vote_id 取第一次 ask 的）
+# 直接 mock _llm_analyze_answers，不动 tmux
+_llm_analyze_answers() {
+    printf '## 共识点\n- MOCKED-CONSENSUS\n\n## 分歧点\n- MOCKED-DIVERGENCE\n'
+}
+VOTE_LLM_DISABLE=0 out6=$(cmd_report --id "$vote_id")
+grep -q '## 综合分析' <<<"$out6" && pass "report 含综合分析段" || fail "缺综合分析段"
+grep -q 'MOCKED-CONSENSUS' <<<"$out6" && pass "LLM 输出被插入" || fail "mock 输出未出现"
+grep -q '关键词统计' <<<"$out6" && fail "LLM 成功时不应再出关键词段" || pass "LLM 成功时关键词段被抑制"
+# LLM 失败时应回退到关键词段
+_llm_analyze_answers() { return 1; }
+VOTE_LLM_DISABLE=0 out6b=$(cmd_report --id "$vote_id")
+grep -q '关键词统计' <<<"$out6b" && pass "LLM 失败时回退关键词" || fail "失败回退缺"
+unset -f _llm_analyze_answers
 
 printf '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
 if [[ $FAIL -eq 0 ]]; then
