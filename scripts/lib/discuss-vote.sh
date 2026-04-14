@@ -84,12 +84,13 @@ MARKER
 }
 
 cmd_ask() {
-    local question="" plist="" timeout="$VOTE_DEFAULT_TIMEOUT"
+    local question="" plist="" timeout="$VOTE_DEFAULT_TIMEOUT" min_responses=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --question)     question="$2";   shift 2 ;;
-            --participants) plist="$2";      shift 2 ;;
-            --timeout)      timeout="$2";    shift 2 ;;
+            --question)      question="$2";      shift 2 ;;
+            --participants)  plist="$2";         shift 2 ;;
+            --timeout)       timeout="$2";       shift 2 ;;
+            --min-responses) min_responses="$2"; shift 2 ;;
             *) die "ask: 未知参数 $1" ;;
         esac
     done
@@ -111,13 +112,16 @@ cmd_ask() {
         names_json=$(jq '.discuss.participants | map(.name)' "$STATE_FILE")
     fi
 
-    # 元数据
+    # 元数据（v0.4: min_responses 未传则存 null）
+    local mr_json="null"
+    [[ -n "$min_responses" ]] && mr_json="$min_responses"
     jq -n \
         --arg question "$question" \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --argjson participants "$names_json" \
         --argjson timeout "$timeout" \
-        '{id: "'"$vote_id"'", question:$question, ts:$ts, participants:$participants, timeout:$timeout}' \
+        --argjson mr "$mr_json" \
+        '{id: "'"$vote_id"'", question:$question, ts:$ts, participants:$participants, timeout:$timeout, min_responses:$mr}' \
         > "$vote_dir/meta.json"
 
     info "🗳  发起投票 $vote_id"
@@ -311,9 +315,10 @@ _llm_analyze_answers() {
         fi
     fi
 
-    local prompt
+    local prompt quorum_note=""
+    [[ "${VOTE_QUORUM_WARN:-0}" == "1" ]] && quorum_note=$'\n\n⚠️ 注意：本次投票未达法定回答人数，以下回答不代表完整立场。'
     prompt=$(cat <<PROMPT
-以下是 ${#names[@]} 位独立参与者针对同一问题的回答。
+以下是 ${#names[@]} 位独立参与者针对同一问题的回答。${quorum_note}
 请做结构化综合，严格按如下 markdown 段落输出（不要别的小节、不要寒暄、不要复述问题）：
 
 ## 共识点
@@ -382,6 +387,18 @@ cmd_report() {
     echo
     echo "_投票 ID: $vote_id · 生成于 $(date -u +%Y-%m-%dT%H:%M:%SZ)_"
     echo
+
+    # v0.4: quorum 判断——answered 只数实质回答（弃权不算）
+    local min_responses; min_responses=$(jq -r '.min_responses // empty' "$vote_dir/meta.json")
+    local answered; answered=$(ls "$vote_dir"/answer-*.md 2>/dev/null | wc -l | tr -d ' ')
+    local quorum_warn=0
+    if [[ -n "$min_responses" && "$min_responses" != "null" ]]; then
+        if (( answered < min_responses )); then
+            echo "> ⚠️ **投票未达法定数**（实质回答 ${answered} / ${min_responses}），结果仅供参考。"
+            echo
+            quorum_warn=1
+        fi
+    fi
     for n in $names; do
         # 弃权者不在主列表里，单列 ## 弃权 段
         [[ -f "$vote_dir/abstain-$n.md" ]] && continue
@@ -415,7 +432,8 @@ cmd_report() {
         local name_arr=()
         for n in $names; do name_arr+=("$n"); done
         local llm_out
-        if llm_out=$(_llm_analyze_answers "$question" "$vote_dir" "${name_arr[@]}"); then
+        # v0.4: quorum 未达时通过 env 传递给 LLM，prompt 里会加注记
+        if VOTE_QUORUM_WARN="$quorum_warn" llm_out=$(_llm_analyze_answers "$question" "$vote_dir" "${name_arr[@]}"); then
             echo "## 综合分析（LLM）"
             echo
             echo "$llm_out"

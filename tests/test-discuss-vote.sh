@@ -224,6 +224,75 @@ VOTE_LLM_DISABLE=1 out9=$(cmd_report --id "$v9_id")
 grep -q '^## 弃权' <<<"$out9" && pass "report 含 ## 弃权 段" || fail "缺弃权段"
 grep -q '信息不足难以判断' <<<"$out9" && pass "report 列出理由" || fail "理由未显示"
 
+section "Test 10: v0.4 quorum / min-responses"
+# 场景 A：2 人投票 + --min-responses 2，只有 cx 答，未达法定
+cmd_ask --question "quorum-q?" --participants cx,cl --min-responses 2 >/dev/null
+v10_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
+v10_id=$(basename "$v10_dir")
+# meta.json 应记 min_responses=2
+mr=$(jq -r '.min_responses' "$v10_dir/meta.json")
+[[ "$mr" == "2" ]] && pass "meta.json 记录 min_responses=2" || fail "min_responses: $mr"
+
+v10_start=$(printf "$VOTE_MARKER_START_TMPL" "$v10_id")
+v10_end=$(printf "$VOTE_MARKER_END_TMPL" "$v10_id")
+# 只给 cx (pane 0.0) 返回答案；cl (pane 0.1) 仅返回提示符（不含 marker/问题，抽不到）
+tmux() {
+    case "$1" in
+        has-session) return 0 ;;
+        capture-pane)
+            # 遍历参数找 -t sess:pane
+            local target=""
+            while [[ $# -gt 0 ]]; do
+                [[ "$1" == "-t" ]] && target="$2"
+                shift
+            done
+            if [[ "$target" == *":0.0" ]]; then
+                cat <<EOF
+${v10_start}
+cx answer
+${v10_end}
+❯
+EOF
+            else
+                echo "❯"
+            fi
+            ;;
+        *) return 0 ;;
+    esac
+}
+export -f tmux
+cmd_collect --id "$v10_id" >/dev/null
+[[ -f "$v10_dir/answer-cx.md" ]] && pass "cx 答案写入" || fail "answer-cx.md 缺"
+[[ -f "$v10_dir/expect-cl.flag" ]] && pass "cl 仍 expect 中" || fail "cl expect 提前清"
+
+VOTE_LLM_DISABLE=1 out10=$(cmd_report --id "$v10_id")
+grep -qE '⚠️.*未达法定' <<<"$out10" && pass "report 顶部含 quorum 警告" || fail "缺警告"
+grep -qE '1.*/.*2' <<<"$out10" && pass "显示 1/2 比例" || fail "缺比例"
+
+# 场景 B：无 --min-responses 时保持 v0.3 行为（无警告）
+cmd_ask --question "q10b?" --participants cx >/dev/null
+v10b_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
+v10b_id=$(basename "$v10b_dir")
+v10b_start=$(printf "$VOTE_MARKER_START_TMPL" "$v10b_id")
+v10b_end=$(printf "$VOTE_MARKER_END_TMPL" "$v10b_id")
+tmux() {
+    case "$1" in
+        has-session) return 0 ;;
+        capture-pane) cat <<EOF
+${v10b_start}
+any answer
+${v10b_end}
+❯
+EOF
+            ;;
+        *) return 0 ;;
+    esac
+}
+export -f tmux
+cmd_collect --id "$v10b_id" >/dev/null
+VOTE_LLM_DISABLE=1 out10b=$(cmd_report --id "$v10b_id")
+! grep -qE '⚠️.*未达法定' <<<"$out10b" && pass "无 min_responses 不报警" || fail "误报警"
+
 section "Test 6: v0.3-B LLM 综合分析（mocked）"
 # 用前面 Test 1/2 已收到答案的 vote_dir（vote_id 取第一次 ask 的）
 # 直接 mock _llm_analyze_answers，不动 tmux
