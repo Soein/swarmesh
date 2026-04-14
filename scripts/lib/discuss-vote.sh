@@ -435,10 +435,14 @@ _llm_analyze_answers() {
 回答：
 PROMPT
 )
+    # v0.5.1: 在每个回答节里附 stance 标注，告诉 LLM 立场分布
     local n
     for n in "${names[@]}"; do
         [[ -f "$vote_dir/answer-$n.md" ]] || continue
-        prompt+=$'\n### '"$n"$'\n'
+        local n_stance="other"
+        [[ -f "$vote_dir/meta-$n.md.json" ]] && n_stance=$(jq -r '.stance // "other"' "$vote_dir/meta-$n.md.json" 2>/dev/null || echo other)
+        [[ -f "$vote_dir/meta-$n.json" ]] && n_stance=$(jq -r '.stance // "other"' "$vote_dir/meta-$n.json" 2>/dev/null || echo other)
+        prompt+=$'\n### '"$n"" [stance=$n_stance]"$'\n'
         prompt+=$(cat "$vote_dir/answer-$n.md")
         prompt+=$'\n'
     done
@@ -494,16 +498,43 @@ cmd_report() {
             quorum_warn=1
         fi
     fi
-    for n in $names; do
-        # 弃权者不在主列表里，单列 ## 弃权 段
-        [[ -f "$vote_dir/abstain-$n.md" ]] && continue
-        echo "## $n"
-        if [[ -f "$vote_dir/answer-$n.md" ]]; then
-            cat "$vote_dir/answer-$n.md"
-        elif [[ -f "$vote_dir/expect-$n.flag" ]]; then
-            echo "_（尚未收到回答，可再次执行 collect）_"
+    # v0.5.1: 按 stance 分组展示（pro/con/neutral/other）
+    # 每个参与者读其 meta-<n>.json 拿 stance，没 meta 默认 other
+    _stance_label() {
+        case "$1" in
+            pro)     echo "## 支持（pro）" ;;
+            con)     echo "## 反对（con）" ;;
+            neutral) echo "## 中立（neutral）" ;;
+            *)       echo "## 其他（other）" ;;
+        esac
+    }
+    local stance_key
+    for stance_key in pro con neutral other; do
+        local group_any=0
+        local stance_block=""
+        for n in $names; do
+            [[ -f "$vote_dir/abstain-$n.md" ]] && continue  # 弃权者不归组
+            local n_stance="other"
+            [[ -f "$vote_dir/meta-$n.json" ]] && n_stance=$(jq -r '.stance // "other"' "$vote_dir/meta-$n.json" 2>/dev/null || echo other)
+            # 归一：未知 stance → other
+            case "$n_stance" in
+                pro|con|neutral) ;;
+                *) n_stance=other ;;
+            esac
+            [[ "$n_stance" == "$stance_key" ]] || continue
+            group_any=1
+            stance_block+=$'\n### '"$n"$'\n'
+            if [[ -f "$vote_dir/answer-$n.md" ]]; then
+                stance_block+=$(cat "$vote_dir/answer-$n.md")$'\n'
+            elif [[ -f "$vote_dir/expect-$n.flag" ]]; then
+                stance_block+=$'_（尚未收到回答，可再次执行 collect）_\n'
+            fi
+        done
+        if (( group_any )); then
+            _stance_label "$stance_key"
+            echo
+            printf '%s\n' "$stance_block"
         fi
-        echo
     done
 
     # v0.4: 弃权段

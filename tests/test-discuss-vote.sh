@@ -126,8 +126,9 @@ jq -e '.confidence >= 0' "$vote_dir/meta-cx.json" >/dev/null \
 section "Test 3: report 输出结构化 markdown"
 out=$(cmd_report --id "$vote_id")
 grep -q '^# 投票结果：' <<<"$out" && pass "markdown 标题" || fail "缺标题"
-grep -q '^## cx' <<<"$out" && pass "cx 节" || fail "缺 cx 节"
-grep -q '^## cl' <<<"$out" && pass "cl 节" || fail "缺 cl 节"
+# v0.5.1: 参与者从 "^## <name>" 变成 stance 分组下的 "^### <name>"
+grep -qE '^### cx' <<<"$out" && pass "cx 节（stance 子节）" || fail "缺 cx 节"
+grep -qE '^### cl' <<<"$out" && pass "cl 节（stance 子节）" || fail "缺 cl 节"
 grep -q '关键词统计' <<<"$out" && pass "关键词统计段" || fail "缺关键词段"
 
 section "Test 4: 指定 --participants 仅问子集"
@@ -345,6 +346,62 @@ export -f tmux
 cmd_collect --id "$v11b_id" >/dev/null
 VOTE_LLM_DISABLE=1 cmd_report --id "$v11b_id" >/dev/null
 [[ ! -f "$DLOG" ]] && pass "无 discuss 上下文时不回写 jsonl" || fail "误写 jsonl"
+
+section "Test 12: v0.5.1 stance 分组展示"
+cmd_ask --question "stance-q?" --participants cx,cl >/dev/null
+v12_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
+v12_id=$(basename "$v12_dir")
+
+# tmux 按 pane 返回不同原文，LLM mock 按原文分派
+tmux() {
+    case "$1" in
+        has-session) return 0 ;;
+        capture-pane)
+            local target=""
+            while [[ $# -gt 0 ]]; do
+                [[ "$1" == "-t" ]] && target="$2"
+                shift
+            done
+            if [[ "$target" == *":0.0" ]]; then
+                printf 'CX_RAW_MARKER pane 0.0 content\n❯\n'
+            else
+                printf 'CL_RAW_MARKER pane 0.1 content\n❯\n'
+            fi
+            ;;
+        *) return 0 ;;
+    esac
+}
+export -f tmux
+_llm_extract_answer() {
+    local _q="$1"; local _raw; _raw=$(cat)
+    if [[ "$_raw" == *"CX_RAW_MARKER"* ]]; then
+        jq -n '{status:"answer", content:"cx 支持方案 A", abstain_reason:null, confidence:0.9, stance:"pro"}'
+    else
+        jq -n '{status:"answer", content:"cl 反对方案 A", abstain_reason:null, confidence:0.8, stance:"con"}'
+    fi
+}
+export -f _llm_extract_answer
+cmd_collect --id "$v12_id" >/dev/null
+
+out12=$(VOTE_LLM_DISABLE=1 cmd_report --id "$v12_id")
+grep -q '## 支持（pro）' <<<"$out12" && pass "pro 分组段" || fail "缺 pro 段: $(head -c 400 <<<"$out12")"
+grep -q '## 反对（con）' <<<"$out12" && pass "con 分组段" || fail "缺 con 段"
+! grep -q '## 中立（neutral）' <<<"$out12" && pass "无 neutral 时省略" || fail "误显示 neutral"
+
+# 恢复默认 mock
+unset -f _llm_extract_answer
+_llm_extract_answer() {
+    local _q="$1"; local _raw; _raw=$(cat)
+    jq -n \
+        --arg st "${MOCK_LLM_STATUS:-answer}" \
+        --arg c  "${MOCK_LLM_CONTENT:-mocked answer}" \
+        --arg r  "${MOCK_LLM_ABSTAIN_REASON:-}" \
+        --arg sn "${MOCK_LLM_STANCE:-neutral}" \
+        '{status:$st, content:(if $c=="NULL" then null else $c end),
+          abstain_reason:(if $r=="" then null else $r end),
+          confidence:0.9, stance:$sn}'
+}
+export -f _llm_extract_answer
 
 section "Test 6: v0.3-B LLM 综合分析（mocked）"
 # 用前面 Test 1/2 已收到答案的 vote_dir（vote_id 取第一次 ask 的）
