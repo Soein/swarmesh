@@ -446,6 +446,32 @@ cmd_report() {
             echo '```'
         fi
     fi
+
+    # v0.4: 若当前在 discuss session 内（存在 session.jsonl），追加 vote_report 事件。
+    # 只落盘、不 paste、不 broadcast，避免触发 watcher 回环。
+    # cmd_promote 用 select(.type=="message") 过滤，vote_report 自动被忽略。
+    local dlog="$RUNTIME_DIR/discuss/session.jsonl"
+    if [[ -f "$dlog" ]]; then
+        local answered_arr abstained_arr
+        answered_arr=$(for n in $names; do
+            [[ -f "$vote_dir/answer-$n.md"  ]] && echo "$n"
+        done | jq -R . | jq -sc .)
+        abstained_arr=$(for n in $names; do
+            [[ -f "$vote_dir/abstain-$n.md" ]] && echo "$n"
+        done | jq -R . | jq -sc .)
+        jq -nc \
+            --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg vid "$vote_id" \
+            --arg q "$question" \
+            --argjson p "$(jq '.participants' "$vote_dir/meta.json")" \
+            --argjson a "$answered_arr" \
+            --argjson ab "$abstained_arr" \
+            --argjson qw "$quorum_warn" \
+            '{turn:0, ts:$ts, type:"vote_report", vote_id:$vid, question:$q,
+              participants:$p, answered:$a, abstained:$ab,
+              quorum_met: ($qw == 0)}' \
+            >> "$dlog"
+    fi
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

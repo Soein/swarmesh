@@ -293,6 +293,73 @@ cmd_collect --id "$v10b_id" >/dev/null
 VOTE_LLM_DISABLE=1 out10b=$(cmd_report --id "$v10b_id")
 ! grep -qE '⚠️.*未达法定' <<<"$out10b" && pass "无 min_responses 不报警" || fail "误报警"
 
+section "Test 11: v0.4 vote → discuss jsonl 回写"
+# 准备 discuss session.jsonl
+DLOG="$PROJECT_DIR/.swarm/runtime/discuss/session.jsonl"
+: > "$DLOG"
+
+cmd_ask --question "jsonl-q?" --participants cx >/dev/null
+v11_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
+v11_id=$(basename "$v11_dir")
+v11_start=$(printf "$VOTE_MARKER_START_TMPL" "$v11_id")
+v11_end=$(printf "$VOTE_MARKER_END_TMPL" "$v11_id")
+tmux() {
+    case "$1" in
+        has-session) return 0 ;;
+        capture-pane) cat <<EOF
+${v11_start}
+answer for jsonl test
+${v11_end}
+❯
+EOF
+            ;;
+        *) return 0 ;;
+    esac
+}
+export -f tmux
+cmd_collect --id "$v11_id" >/dev/null
+VOTE_LLM_DISABLE=1 cmd_report --id "$v11_id" >/dev/null
+
+# 验证 jsonl 被追加
+lines=$(wc -l <"$DLOG" | tr -d ' ')
+[[ "$lines" -ge 1 ]] && pass "jsonl 被追加（$lines 行）" || fail "jsonl 未写入"
+
+last_line=$(tail -1 "$DLOG")
+echo "$last_line" | jq -e '.type=="vote_report"' >/dev/null \
+    && pass "type=vote_report" || fail "type 错: $(echo "$last_line" | jq -r .type)"
+echo "$last_line" | jq -e --arg v "$v11_id" '.vote_id==$v' >/dev/null \
+    && pass "vote_id 正确" || fail "vote_id 错"
+echo "$last_line" | jq -e '.answered | length == 1' >/dev/null \
+    && pass "answered 数组含 1 人" || fail "answered: $(echo "$last_line" | jq -c .answered)"
+echo "$last_line" | jq -e '.quorum_met == true' >/dev/null \
+    && pass "quorum_met=true（无 min_responses）" || fail "quorum_met 错"
+
+# 无 DISCUSS_LOG 时不应回写
+rm -f "$DLOG"
+# 再起一个 vote，验证不写 jsonl（因为 DLOG 不存在）
+cmd_ask --question "no-jsonl-q?" --participants cx >/dev/null
+v11b_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
+v11b_id=$(basename "$v11b_dir")
+v11b_start=$(printf "$VOTE_MARKER_START_TMPL" "$v11b_id")
+v11b_end=$(printf "$VOTE_MARKER_END_TMPL" "$v11b_id")
+tmux() {
+    case "$1" in
+        has-session) return 0 ;;
+        capture-pane) cat <<EOF
+${v11b_start}
+x
+${v11b_end}
+❯
+EOF
+            ;;
+        *) return 0 ;;
+    esac
+}
+export -f tmux
+cmd_collect --id "$v11b_id" >/dev/null
+VOTE_LLM_DISABLE=1 cmd_report --id "$v11b_id" >/dev/null
+[[ ! -f "$DLOG" ]] && pass "无 discuss 上下文时不回写 jsonl" || fail "误写 jsonl"
+
 section "Test 6: v0.3-B LLM 综合分析（mocked）"
 # 用前面 Test 1/2 已收到答案的 vote_dir（vote_id 取第一次 ask 的）
 # 直接 mock _llm_analyze_answers，不动 tmux
