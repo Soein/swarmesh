@@ -42,6 +42,26 @@ export VOTE_LLM_DISABLE=1
 source "$VOTE"
 _ensure_runtime
 
+# v0.5: 统一 _llm_extract_answer mock。
+# 默认返回 status=answer + MOCK_LLM_CONTENT（默认 "mocked answer"）。
+# 每个 test section 按需 export MOCK_LLM_STATUS / MOCK_LLM_CONTENT /
+# MOCK_LLM_ABSTAIN_REASON / MOCK_LLM_STANCE 调整，或者重定义本函数。
+_llm_extract_answer() {
+    local _q="$1"
+    local _raw; _raw=$(cat)  # absorb stdin
+    jq -n \
+        --arg st "${MOCK_LLM_STATUS:-answer}" \
+        --arg c  "${MOCK_LLM_CONTENT:-mocked answer}" \
+        --arg r  "${MOCK_LLM_ABSTAIN_REASON:-}" \
+        --arg sn "${MOCK_LLM_STANCE:-neutral}" \
+        '{status:$st,
+          content:(if $c=="NULL" then null else $c end),
+          abstain_reason:(if $r=="" then null else $r end),
+          confidence:0.9,
+          stance:$sn}'
+}
+export -f _llm_extract_answer
+
 # mock _paste_isolated + tmux
 MOCK_PASTE="$TEST_ROOT/paste.journal"
 : > "$MOCK_PASTE"
@@ -90,14 +110,18 @@ paste_count=$(wc -l < "$MOCK_PASTE" | tr -d ' ')
 grep -q 'pane=0.0' "$MOCK_PASTE" && grep -q 'pane=0.1' "$MOCK_PASTE" \
     && pass "两个 pane 都收到" || fail "漏 pane"
 
-section "Test 2: collect 提取回答"
+section "Test 2: collect 提取回答（v0.5 走 LLM mock）"
 vote_id=$(basename "$vote_dir")
-cmd_collect --id "$vote_id" >/dev/null
+MOCK_LLM_CONTENT="Redis for sub-ms latency" cmd_collect --id "$vote_id" >/dev/null
 
 [[ -f "$vote_dir/answer-cx.md" ]] && pass "cx 回答已存" || fail "answer-cx.md 缺"
 [[ -f "$vote_dir/answer-cl.md" ]] && pass "cl 回答已存" || fail "answer-cl.md 缺"
-grep -q 'Redis for sub-ms' "$vote_dir/answer-cx.md" && pass "回答内容正确" \
+grep -q 'Redis for sub-ms' "$vote_dir/answer-cx.md" && pass "LLM content 写入 answer" \
     || fail "回答内容: $(cat "$vote_dir/answer-cx.md")"
+[[ -f "$vote_dir/meta-cx.json" ]] && pass "meta-cx.json 已存 (confidence/stance)" \
+    || fail "meta-cx.json 缺"
+jq -e '.confidence >= 0' "$vote_dir/meta-cx.json" >/dev/null \
+    && pass "confidence 字段存在" || fail "confidence 字段缺"
 
 section "Test 3: report 输出结构化 markdown"
 out=$(cmd_report --id "$vote_id")
@@ -133,91 +157,27 @@ VOTE_STABLE_HITS=2 cmd_collect --id "$v5_id" >/dev/null
 ws="$v5_dir/.watch-state.json"
 [[ -f "$ws" ]] && pass ".watch-state.json 已落盘" || fail "watch-state 缺"
 
-section "Test 7: v0.4 marker 抽取 + 回退"
-# 准备一个 vote（VOTE_STABLE_HITS=1 单次即提交）
-cmd_ask --question "marker-q?" --participants cx >/dev/null
-v7_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
-v7_id=$(basename "$v7_dir")
-v7_start=$(printf "$VOTE_MARKER_START_TMPL" "$v7_id")
-v7_end=$(printf "$VOTE_MARKER_END_TMPL" "$v7_id")
-
-# 覆盖 tmux mock，返回 marker 包裹的回答（上下加装饰噪音）
-tmux() {
-    case "$1" in
-        has-session) return 0 ;;
-        capture-pane) cat <<EOF
-garbage preamble noise ━━━━━━━━━━
-│ gpt-4o · 2k tokens
-${v7_start}
-MARKER_CLEAN_ANSWER line1
-MARKER_CLEAN_ANSWER line2
-${v7_end}
-装饰行 · ⏱️ 1.2s
-❯
-EOF
-            ;;
-        *) return 0 ;;
-    esac
-}
-export -f tmux
-cmd_collect --id "$v7_id" >/dev/null
-
-[[ -f "$v7_dir/answer-cx.md" ]] && pass "marker 抽取写入 answer" || fail "answer 缺"
-grep -q 'MARKER_CLEAN_ANSWER line1' "$v7_dir/answer-cx.md" && pass "marker 内容被抽出" \
-    || fail "marker 内容: $(cat "$v7_dir/answer-cx.md" 2>/dev/null)"
-! grep -q '<<<VOTE' "$v7_dir/answer-cx.md" && pass "marker 行被剥离" || fail "marker 残留"
-! grep -q 'garbage preamble\|gpt-4o\|装饰行' "$v7_dir/answer-cx.md" && pass "marker 外噪音被隔离" \
-    || fail "噪音泄漏"
-
-# 回退路径：marker 不存在时仍能用 v0.3 启发式抽取
-cmd_ask --question "Redis vs Dynamo?" --participants cx >/dev/null
-v7b_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
-v7b_id=$(basename "$v7b_dir")
-tmux() {
-    case "$1" in
-        has-session) return 0 ;;
-        capture-pane) cat <<EOF
-【独立投票】
-问题：Redis vs Dynamo?
-FALLBACK_HEURISTIC_ANSWER
-❯
-EOF
-            ;;
-        *) return 0 ;;
-    esac
-}
-export -f tmux
-cmd_collect --id "$v7b_id" >/dev/null
-grep -q 'FALLBACK_HEURISTIC_ANSWER' "$v7b_dir/answer-cx.md" \
-    && pass "marker 缺失时启发式回退仍可抽取" || fail "回退失败"
-
-section "Test 9: v0.4 abstain 语义"
+section "Test 9: v0.5 abstain 语义（LLM status=abstain）"
 cmd_ask --question "abstain-q?" --participants cx >/dev/null
 v9_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
 v9_id=$(basename "$v9_dir")
-v9_start=$(printf "$VOTE_MARKER_START_TMPL" "$v9_id")
-v9_end=$(printf "$VOTE_MARKER_END_TMPL" "$v9_id")
-tmux() {
-    case "$1" in
-        has-session) return 0 ;;
-        capture-pane) cat <<EOF
-${v9_start}
-ABSTAIN: 信息不足难以判断
-${v9_end}
-❯
-EOF
-            ;;
-        *) return 0 ;;
-    esac
-}
-export -f tmux
-cmd_collect --id "$v9_id" >/dev/null
+MOCK_LLM_STATUS=abstain MOCK_LLM_ABSTAIN_REASON="信息不足难以判断" MOCK_LLM_CONTENT="NULL" \
+    cmd_collect --id "$v9_id" >/dev/null
 
 [[ -f "$v9_dir/abstain-cx.md" ]] && pass "abstain 文件已落盘" || fail "abstain-cx.md 缺"
 [[ ! -f "$v9_dir/answer-cx.md" ]] && pass "不生成 answer 文件" || fail "误写了 answer"
 grep -q '信息不足难以判断' "$v9_dir/abstain-cx.md" && pass "弃权理由已存" \
     || fail "理由: $(cat "$v9_dir/abstain-cx.md" 2>/dev/null)"
 [[ ! -f "$v9_dir/expect-cx.flag" ]] && pass "expect flag 已清理" || fail "expect flag 残留"
+
+section "Test 7b: v0.5 LLM status=incomplete 保留 expect"
+cmd_ask --question "incomplete-q?" --participants cx >/dev/null
+v7b_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
+v7b_id=$(basename "$v7b_dir")
+MOCK_LLM_STATUS=incomplete MOCK_LLM_CONTENT="NULL" cmd_collect --id "$v7b_id" >/dev/null
+[[ ! -f "$v7b_dir/answer-cx.md" ]] && pass "incomplete 不写 answer" || fail "误写 answer"
+[[ ! -f "$v7b_dir/abstain-cx.md" ]] && pass "incomplete 不写 abstain" || fail "误写 abstain"
+[[ -f "$v7b_dir/expect-cx.flag" ]] && pass "expect flag 保留供下次 collect" || fail "expect flag 误清"
 
 # report 应含弃权段
 VOTE_LLM_DISABLE=1 out9=$(cmd_report --id "$v9_id")
@@ -261,6 +221,17 @@ EOF
     esac
 }
 export -f tmux
+# LLM 按 pane 原文分派：cx 有 "cx answer" 字样 → status=answer；cl 只有 ❯ → incomplete
+_llm_extract_answer() {
+    local _q="$1"
+    local _raw; _raw=$(cat)
+    if [[ "$_raw" == *"cx answer"* ]]; then
+        jq -n '{status:"answer", content:"cx-llm-content", abstain_reason:null, confidence:0.9, stance:"neutral"}'
+    else
+        jq -n '{status:"incomplete", content:null, abstain_reason:null, confidence:0.3, stance:"other"}'
+    fi
+}
+export -f _llm_extract_answer
 cmd_collect --id "$v10_id" >/dev/null
 [[ -f "$v10_dir/answer-cx.md" ]] && pass "cx 答案写入" || fail "answer-cx.md 缺"
 [[ -f "$v10_dir/expect-cl.flag" ]] && pass "cl 仍 expect 中" || fail "cl expect 提前清"
@@ -268,6 +239,21 @@ cmd_collect --id "$v10_id" >/dev/null
 VOTE_LLM_DISABLE=1 out10=$(cmd_report --id "$v10_id")
 grep -qE '⚠️.*未达法定' <<<"$out10" && pass "report 顶部含 quorum 警告" || fail "缺警告"
 grep -qE '1.*/.*2' <<<"$out10" && pass "显示 1/2 比例" || fail "缺比例"
+
+# 恢复默认 LLM mock
+unset -f _llm_extract_answer
+_llm_extract_answer() {
+    local _q="$1"; local _raw; _raw=$(cat)
+    jq -n \
+        --arg st "${MOCK_LLM_STATUS:-answer}" \
+        --arg c  "${MOCK_LLM_CONTENT:-mocked answer}" \
+        --arg r  "${MOCK_LLM_ABSTAIN_REASON:-}" \
+        --arg sn "${MOCK_LLM_STANCE:-neutral}" \
+        '{status:$st, content:(if $c=="NULL" then null else $c end),
+          abstain_reason:(if $r=="" then null else $r end),
+          confidence:0.9, stance:$sn}'
+}
+export -f _llm_extract_answer
 
 # 场景 B：无 --min-responses 时保持 v0.3 行为（无警告）
 cmd_ask --question "q10b?" --participants cx >/dev/null

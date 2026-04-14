@@ -33,10 +33,17 @@ VOTE_PROMPT_PATTERNS="${VOTE_PROMPT_PATTERNS:-❯|›|Type your message|Use /ski
 VOTE_LLM_DISABLE="${VOTE_LLM_DISABLE:-0}"
 VOTE_LLM_CMD="${VOTE_LLM_CMD:-}"
 VOTE_LLM_TIMEOUT="${VOTE_LLM_TIMEOUT:-90}"
-# v0.4: marker 锚点模板。%s 占位为 vote_id，保证每轮 marker 唯一、
-# 不会和历史 pane scrollback 里的残留 marker 撞上。
+# v0.4: marker 锚点模板。v0.5 起 marker 只作 CLI 软提示（帮助 LLM 定位答案），
+# 抽取本身完全由 LLM 做，marker 有无都能正确抽取。
 VOTE_MARKER_START_TMPL="${VOTE_MARKER_START_TMPL:-<<<VOTE_%s_START>>>}"
 VOTE_MARKER_END_TMPL="${VOTE_MARKER_END_TMPL:-<<<VOTE_%s_END>>>}"
+# v0.5: LLM-assisted extract。collect 稳定性达标后，每个参与者的 pane 原文
+# 喂给一个 headless CLI，要求返回 {status, content, abstain_reason, confidence, stance}
+# 结构化 JSON。v0.4 的硬规则（awk marker、启发式黑名单）彻底删除。
+VOTE_LLM_EXTRACT_CMD="${VOTE_LLM_EXTRACT_CMD:-}"          # 默认复用 VOTE_LLM_CMD 自动探测
+VOTE_LLM_EXTRACT_TIMEOUT="${VOTE_LLM_EXTRACT_TIMEOUT:-30}"
+VOTE_LLM_EXTRACT_PARALLEL="${VOTE_LLM_EXTRACT_PARALLEL:-}" # 未设 = 参与者数
+VOTE_LLM_EXTRACT_MAX="${VOTE_LLM_EXTRACT_MAX:-10}"         # 硬上限防资源挤爆
 
 die()  { echo "[vote] ERROR: $*" >&2; exit 1; }
 info() { echo "[vote] $*"; }
@@ -217,18 +224,19 @@ cmd_collect() {
     local question; question=$(jq -r '.question' "$vote_dir/meta.json")
     local names; names=$(jq -r '.participants[]' "$vote_dir/meta.json")
 
+    # v0.5: Phase 1 ——稳定性判定，筛出待 LLM-extract 的参与者。
+    #       pane 原文落盘 (.pending-$n.raw)，由 Phase 2 并发消费。
+    local pending_count=0
     for n in $names; do
         local pane; pane=$(jq -r --arg n "$n" '.discuss.participants[] | select(.name==$n) | .pane' "$STATE_FILE")
         [[ -z "$pane" ]] && continue
-        # 已收到的跳过
         [[ -f "$vote_dir/expect-$n.flag" ]] || continue
 
-        # 抓整个 pane（后 500 行）
         local raw; raw=$(tmux capture-pane -t "${DISCUSS_SESSION_NAME}:${pane}" -p -S -500 2>/dev/null \
             | sed -E $'s/\x1b\\[[0-9;?]*[a-zA-Z]//g' | tr -d '\r')
         [[ -n "$raw" ]] || continue
 
-        # v0.3-A: 稳定性判定——hash 不变 + 命中提示符连续 N 次才认定"答完"
+        # v0.3-A: 稳定性判定（保留）——hash 不变 + 命中提示符连续 N 次才认定"答完"
         local hash; hash=$(printf '%s' "$raw" | shasum -a 256 | awk '{print $1}')
         local ws; ws=$(_vote_ws_get "$vote_dir" "$n")
         local last_hash="${ws%%|*}" quiet_hits="${ws##*|}"
@@ -236,7 +244,6 @@ cmd_collect() {
             if [[ "$hash" == "$last_hash" ]]; then
                 quiet_hits=$((quiet_hits + 1))
             else
-                # 首次观测或内容变动后首次 prompt hit：重置为 1
                 quiet_hits=1
             fi
         else
@@ -247,45 +254,66 @@ cmd_collect() {
             info "⏳ @$n 尚未稳定 ($quiet_hits/$VOTE_STABLE_HITS)"
             continue
         fi
+        # 写入待 extract 文件供 Phase 2 并发消费
+        printf '%s' "$raw" > "$vote_dir/.pending-$n.raw"
+        pending_count=$((pending_count + 1))
+    done
 
-        # v0.4: 优先 marker 抽取；marker 缺失时回退到启发式
-        local start_tag end_tag
-        start_tag=$(printf "$VOTE_MARKER_START_TMPL" "$vote_id")
-        end_tag=$(printf "$VOTE_MARKER_END_TMPL" "$vote_id")
-        local answer=""
-        if grep -qF "$start_tag" <<<"$raw" && grep -qF "$end_tag" <<<"$raw"; then
-            answer=$(awk -v s="$start_tag" -v e="$end_tag" '
-                index($0, s) { found=1; next }
-                index($0, e) { found=0 }
-                found
-            ' <<<"$raw" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | awk 'NF')
+    (( pending_count == 0 )) && return 0
+
+    # v0.5: Phase 2 ——并发 LLM extract。
+    # 并发度：VOTE_LLM_EXTRACT_PARALLEL 未设 = pending_count；最大不超过 VOTE_LLM_EXTRACT_MAX。
+    local parallel="${VOTE_LLM_EXTRACT_PARALLEL:-$pending_count}"
+    (( parallel > VOTE_LLM_EXTRACT_MAX )) && parallel=$VOTE_LLM_EXTRACT_MAX
+    (( parallel < 1 )) && parallel=1
+    info "🧠 Phase 2: LLM extract $pending_count 人，并发度 $parallel"
+
+    # 后台起 N 个 job（受 parallel 上限），每个处理一个 pending-*.raw
+    local running=0 n
+    for n in $names; do
+        [[ -f "$vote_dir/.pending-$n.raw" ]] || continue
+        (
+            local raw_path="$vote_dir/.pending-$n.raw"
+            local out_path="$vote_dir/.extract-$n.json"
+            _llm_extract_answer "$question" < "$raw_path" > "$out_path" 2>/dev/null \
+                || echo '{"status":"error"}' > "$out_path"
+        ) &
+        running=$((running + 1))
+        if (( running >= parallel )); then
+            wait -n 2>/dev/null || wait
+            running=$((running - 1))
         fi
-        if [[ -z "$answer" ]]; then
-            [[ -n "$start_tag" ]] && info "⚠ @$n 未用 marker，回退启发式抽取"
-            # 启发式：截取问题之后的部分（v0.3 原逻辑保留做 fallback）
-            answer=$(awk -v q="$question" '
-                BEGIN{found=0}
-                { if (!found && index($0, q)) { found=1; next }
-                  if (found) print }
-            ' <<<"$raw" | grep -vE '❯|›|^─+$|^╭|^│|^╰|gpt-.*·|\[Opus|\[Sonnet|上下文 |用量 |本周 |⏱️|/private/tmp|Working.*esc to interrupt|^[[:space:]]*$' \
-                | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
-                | awk 'NF')
-        fi
-        if [[ -n "$answer" ]]; then
-            # v0.4: 弃权识别——marker 内仅写 "ABSTAIN: <理由>" 单行
-            if [[ "$answer" =~ ^[[:space:]]*ABSTAIN:[[:space:]]*(.*) ]]; then
-                local reason="${BASH_REMATCH[1]}"
-                printf '%s' "$reason" > "$vote_dir/abstain-$n.md"
-                rm -f "$vote_dir/expect-$n.flag"
-                info "🟡 @$n 弃权（${reason:0:60}...）"
-            else
-                printf '%s' "$answer" > "$vote_dir/answer-$n.md"
-                rm -f "$vote_dir/expect-$n.flag"
-                info "✅ 收到 @$n 的回答 ($(wc -l <<<"$answer" | tr -d ' ') 行)"
-            fi
-        else
-            info "⏳ @$n 尚未回答（或无法提取）"
-        fi
+    done
+    wait
+
+    # Phase 3: 读回 extract 结果，分发到 answer/abstain，或保留 expect
+    for n in $names; do
+        local out_path="$vote_dir/.extract-$n.json"
+        [[ -f "$out_path" ]] || continue
+        local status; status=$(jq -r '.status // "error"' "$out_path")
+        case "$status" in
+            answer)
+                jq -r '.content // ""' "$out_path" > "$vote_dir/answer-$n.md"
+                # meta: confidence / stance 供 v0.5.1 report 分组 & 综合阶段用
+                jq -c '{confidence:(.confidence // 0.5), stance:(.stance // "other")}' \
+                    "$out_path" > "$vote_dir/meta-$n.json"
+                rm -f "$vote_dir/expect-$n.flag" "$vote_dir/.pending-$n.raw" "$out_path"
+                info "✅ @$n 回答已抽取（stance=$(jq -r .stance "$vote_dir/meta-$n.json")）"
+                ;;
+            abstain)
+                jq -r '.abstain_reason // ""' "$out_path" > "$vote_dir/abstain-$n.md"
+                rm -f "$vote_dir/expect-$n.flag" "$vote_dir/.pending-$n.raw" "$out_path"
+                info "🟡 @$n 弃权"
+                ;;
+            incomplete|no_answer)
+                rm -f "$vote_dir/.pending-$n.raw" "$out_path"
+                info "⏳ @$n LLM 判定为 ${status}，下次 collect 再试"
+                ;;
+            error|*)
+                rm -f "$vote_dir/.pending-$n.raw" "$out_path"
+                die "LLM extract 返回无效/失败 for @$n (status=${status})"
+                ;;
+        esac
     done
 }
 
@@ -295,6 +323,73 @@ _vote_exec_timeout() {
     if command -v gtimeout >/dev/null 2>&1; then gtimeout "$tout" "$@"
     elif command -v timeout  >/dev/null 2>&1; then timeout  "$tout" "$@"
     else perl -e 'alarm shift @ARGV; exec @ARGV' "$tout" "$@"; fi
+}
+
+# v0.5: 选 LLM extract CLI（探测顺序同综合阶段）----------------------
+_pick_llm_cmd() {
+    local prefer="$1"
+    if [[ -n "$prefer" ]]; then echo "$prefer"; return 0; fi
+    if   command -v claude >/dev/null 2>&1; then echo "claude -p"
+    elif command -v codex  >/dev/null 2>&1; then echo "codex exec"
+    elif command -v gemini >/dev/null 2>&1; then echo "gemini -p"
+    else return 1
+    fi
+}
+
+# v0.5: LLM 抽取+分类单个参与者的 pane 输出 -------------------------
+# 入参:
+#   $1 question
+#   stdin: pane_raw (已去 ANSI)
+# 出参:
+#   stdout: 单行 JSON {status, content, abstain_reason, confidence, stance}
+#   status ∈ {answer, abstain, incomplete, no_answer}
+# 失败:
+#   return 1（LLM 不可用/超时/返回非 JSON）
+_llm_extract_answer() {
+    local question="$1"
+    local llm_cmd; llm_cmd=$(_pick_llm_cmd "$VOTE_LLM_EXTRACT_CMD") || return 1
+
+    local pane_raw; pane_raw=$(cat)  # absorb stdin
+    local prompt
+    prompt=$(cat <<PROMPT
+你是一个投票裁判助手。以下是一个参与者的终端 pane 输出（去 ANSI 后约 200 行）。
+他们被问的问题是：
+$question
+
+请判定 pane 里是否包含对这个问题的**完整**回答，并返回严格的单行 JSON：
+{
+  "status": "answer" | "abstain" | "incomplete" | "no_answer",
+  "content": "<纯净答案正文>" 或 null,
+  "abstain_reason": "<理由>" 或 null,
+  "confidence": 0.0-1.0,
+  "stance": "pro" | "con" | "neutral" | "other"
+}
+
+规则：
+- status=answer：给出了对问题的实质回答（无论语言、篇幅）
+- status=abstain：明确表示信息不足 / 无法判断 / 拒绝回答（中英文均算，如"弃权"/"I abstain"/"I don't know"）
+- status=incomplete：还在打字或句子截断，没答完
+- status=no_answer：pane 里完全看不到和问题相关的回答
+content 里**只**保留答案正文——剥离 CLI 装饰、提示符、工具调用日志、上下文头、paste header。
+stance：相对问题的立场（pro=支持/认同，con=反对/否定，neutral=中立/权衡，other=不适用）。
+confidence：你对自己分类的信心（低表示你也看不懂他们想说什么）。
+
+只输出 JSON，不要额外文字、不要 markdown 代码块。
+
+--- PANE 开始 ---
+$pane_raw
+--- PANE 结束 ---
+PROMPT
+)
+    local out
+    # shellcheck disable=SC2086
+    out=$(printf '%s' "$prompt" | _vote_exec_timeout "$VOTE_LLM_EXTRACT_TIMEOUT" $llm_cmd 2>/dev/null) || return 1
+    [[ -n "$out" ]] || return 1
+    # 健壮性：剥可能的 ```json 包裹、前后空白
+    out=$(printf '%s' "$out" | sed -E 's/^```(json)?//; s/```$//' | tr -d '\r' | awk 'NF' | head -c 8192)
+    # 校验是合法 JSON 且 status 字段存在
+    echo "$out" | jq -e '.status' >/dev/null 2>&1 || return 1
+    printf '%s' "$out"
 }
 
 # v0.3-B: 喂 LLM 做共识/分歧综合 --------------------------------------
