@@ -66,8 +66,12 @@ VOTE_AUTO_COLLECT=0 "${CLAUDE_PLUGIN_ROOT}/scripts/lib/discuss-vote.sh" ask --qu
 | `VOTE_LLM_DISABLE` | 0 | 1 跳过 LLM 综合，直接用关键词段 |
 | `VOTE_LLM_CMD` | 自动探测 | 指定 headless CLI，如 `claude -p` / `codex exec` / `gemini -p` |
 | `VOTE_LLM_TIMEOUT` | 90 | LLM 综合调用超时秒数 |
+| `VOTE_MARKER_START_TMPL` | `<<<VOTE_%s_START>>>` | marker 起始模板（`%s`=vote_id） |
+| `VOTE_MARKER_END_TMPL` | `<<<VOTE_%s_END>>>` | marker 结束模板 |
 
 ## 典型用例
+
+### 1. 基础三方投票
 
 ```bash
 /swarm-chat ~/app codex cx          # 起 Codex
@@ -76,6 +80,35 @@ VOTE_AUTO_COLLECT=0 "${CLAUDE_PLUGIN_ROOT}/scripts/lib/discuss-vote.sh" ask --qu
 /swarm-vote "Redis vs DynamoDB 做会话缓存，哪个更合适？请独立判断"
 # ...等 1 分钟...
 cat .swarm/runtime/discuss/votes/$VOTE_ID/report.md
+```
+
+### 2. 带 quorum 的强表决（3 人至少 2 人给实质答案才算数）
+
+```bash
+VOTE_ID=$(discuss-vote.sh ask \
+    --question "这个 PR 是否可以合并？" \
+    --participants cx,cl,gm \
+    --min-responses 2 | tail -1)
+# 若只有 1 人答：report 顶部会出 "⚠️ 投票未达法定数（1/2）"
+```
+
+### 3. 弃权演示（CLI 信息不足时主动声明）
+
+```bash
+/swarm-vote "根据已有信息，A 和 B 哪个更安全？"
+# 若某 CLI 在 marker 内回：ABSTAIN: 没看到 A/B 的实现代码，无法判断
+#  → abstain-<n>.md 落盘，report "## 弃权" 段列出理由
+#  → LLM 综合 prompt 自动忽略弃权者
+```
+
+### 4. 嵌在 discuss 管道里（vote_report 回写 jsonl）
+
+```bash
+# 讨论中...
+/swarm-vote "上面几个方案里选哪个？"
+# 投票完成后，tail -1 .swarm/runtime/discuss/session.jsonl
+# 可见 {"type":"vote_report","vote_id":"...","answered":[...],...}
+# 后续 /swarm-promote 不受干扰（默认仅收录 type=message）
 ```
 
 $ARGUMENTS
