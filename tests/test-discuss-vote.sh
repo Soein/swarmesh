@@ -442,6 +442,31 @@ _r13_out=$( { cmd_next_round --id "$v13_id" 2>&1 || true; } )
 grep -qi '已是最后轮\|max.*rounds' <<<"$_r13_out" \
     && pass "超最大轮数拒绝" || fail "未拒绝超轮（输出: $_r13_out）"
 
+section "Test 14: v0.5.3 vote_id 用 UUID 替代 \$RANDOM"
+cmd_ask --question "uuid-q?" --participants cx >/dev/null
+v14_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
+v14_id=$(basename "$v14_dir")
+# v0.5.3 后的 id 应形如 vote-<ts>-<8+ hex 字符>（非 5 位 $RANDOM 数字）
+suffix="${v14_id##*-}"
+[[ ${#suffix} -ge 8 ]] && pass "vote_id 后缀长度 ≥ 8（UUID 风格）" \
+    || fail "后缀太短: $suffix"
+[[ "$suffix" =~ ^[0-9a-f]+$ ]] && pass "后缀为十六进制（无冲突）" \
+    || fail "后缀非 hex: $suffix"
+
+section "Test 15: v0.5.3 cmd_list 列出所有 vote"
+out15=$( cmd_list 2>&1 )
+# 前面测试已创建多个 vote
+grep -q "$v14_id" <<<"$out15" && pass "list 含新建 vote" || fail "list 输出: $out15"
+grep -q 'uuid-q' <<<"$out15" && pass "list 显示问题摘要" || fail "缺问题"
+
+section "Test 16: v0.5.3 cmd_cancel 删除 vote"
+cmd_ask --question "cancel-q?" --participants cx >/dev/null
+v16_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
+v16_id=$(basename "$v16_dir")
+[[ -d "$v16_dir" ]] && pass "vote 已创建" || fail
+cmd_cancel --id "$v16_id" >/dev/null
+[[ ! -d "$v16_dir" ]] && pass "cancel 后目录已删" || fail "目录仍存"
+
 section "Test 6: v0.3-B LLM 综合分析（mocked）"
 # 用前面 Test 1/2 已收到答案的 vote_dir（vote_id 取第一次 ask 的）
 # 直接 mock _llm_analyze_answers，不动 tmux

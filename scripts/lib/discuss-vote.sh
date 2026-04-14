@@ -108,7 +108,12 @@ cmd_ask() {
     tmux has-session -t "$DISCUSS_SESSION_NAME" 2>/dev/null \
         || die "discuss session 不存在，先 /swarm-chat <cli> 或 /swarm-chat-add 准备参与者"
 
-    local vote_id; vote_id="vote-$(date +%s)-$RANDOM"
+    # v0.5.3: UUID 后缀替代 $RANDOM，消除同秒并发碰撞概率
+    local vote_suffix
+    vote_suffix=$(uuidgen 2>/dev/null | tr -d - | tr 'A-Z' 'a-z' | cut -c1-12 \
+        || openssl rand -hex 6 2>/dev/null \
+        || printf '%x%x' "$RANDOM" "$RANDOM")
+    local vote_id; vote_id="vote-$(date +%s)-${vote_suffix}"
     local vote_dir="$VOTE_ROOT/$vote_id"
     mkdir -p "$vote_dir"
 
@@ -678,23 +683,76 @@ CTX
     info "🔁 已进入第 $((cur + 1)) / ${rounds} 轮"
 }
 
+# v0.5.3: cmd_list —— 列出所有历史 vote（按 mtime 倒序） ---
+cmd_list() {
+    _ensure_runtime
+    [[ -d "$VOTE_ROOT" ]] || { echo "（暂无投票）"; return 0; }
+    # 用 stat 拿 mtime，按时间倒序
+    local vote_dir id q cur rounds answered total
+    find "$VOTE_ROOT" -mindepth 1 -maxdepth 1 -type d -name 'vote-*' \
+        | xargs -I{} stat -f '%m %N' {} 2>/dev/null \
+        | sort -rn \
+        | while read -r _mtime vote_dir; do
+            id=$(basename "$vote_dir")
+            [[ -f "$vote_dir/meta.json" ]] || continue
+            q=$(jq -r '.question' "$vote_dir/meta.json" 2>/dev/null)
+            cur=$(jq -r '.current_round // 1' "$vote_dir/meta.json")
+            rounds=$(jq -r '.rounds // 1' "$vote_dir/meta.json")
+            total=$(jq -r '.participants | length' "$vote_dir/meta.json")
+            answered=$(ls "$vote_dir"/answer-*.md 2>/dev/null | wc -l | tr -d ' ')
+            printf '%s  [R%s/%s | %s/%s 答]  %s\n' "$id" "$cur" "$rounds" "$answered" "$total" "${q:0:80}"
+        done
+}
+
+# v0.5.3: cmd_cancel —— 取消并删除 vote 目录 ---
+cmd_cancel() {
+    local vote_id=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --id) vote_id="$2"; shift 2 ;;
+            *) die "cancel: 未知参数 $1" ;;
+        esac
+    done
+    [[ -n "$vote_id" ]] || die "--id 必需"
+    _ensure_runtime
+    local vote_dir="$VOTE_ROOT/$vote_id"
+    [[ -d "$vote_dir" ]] || die "vote 目录不存在: $vote_dir"
+    rm -rf "$vote_dir"
+    info "🗑  vote $vote_id 已取消"
+}
+
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     case "${1:-}" in
         ask)        shift; cmd_ask        "$@" ;;
         next-round) shift; cmd_next_round "$@" ;;
-        collect) shift; cmd_collect "$@" ;;
-        report)  shift; cmd_report  "$@" ;;
+        collect)    shift; cmd_collect    "$@" ;;
+        report)     shift; cmd_report     "$@" ;;
+        list)       shift; cmd_list       "$@" ;;
+        cancel)     shift; cmd_cancel     "$@" ;;
         help|-h|--help|"")
             cat <<EOF
-discuss-vote.sh — 隔离投票
+discuss-vote.sh — 隔离投票（v0.5）
 
 子命令:
-  ask     --question <text> [--participants a,b,c] [--timeout 120]
-  collect --id <vote-id>
-  report  --id <vote-id>
+  ask        --question <text> [--participants a,b,c] [--timeout N]
+             [--min-responses N] [--rounds N]
+  collect    --id <vote-id>          # LLM-assisted 抽取
+  report     --id <vote-id>
+  next-round --id <vote-id>          # 多轮辩论下一轮
+  list                                # 列出所有历史 vote
+  cancel     --id <vote-id>          # 删除 vote 目录
 
-环境变量:
-  VOTE_DEFAULT_TIMEOUT=120
+环境变量（全部）:
+  VOTE_AUTO_COLLECT        默认 1，0 关闭后台 collect
+  VOTE_STABLE_HITS         默认 2，稳定性判定所需连续 quiet+prompt 次数
+  VOTE_DEFAULT_TIMEOUT     默认 120，后台 collect 最长等待
+  VOTE_LLM_DISABLE         默认 0，综合分析是否关闭
+  VOTE_LLM_CMD             综合阶段的 headless CLI（默认自动探测）
+  VOTE_LLM_TIMEOUT         默认 90，综合调用超时
+  VOTE_LLM_EXTRACT_CMD     extract 阶段 CLI（默认复用 VOTE_LLM_CMD）
+  VOTE_LLM_EXTRACT_TIMEOUT 默认 30
+  VOTE_LLM_EXTRACT_PARALLEL 默认 = pending 人数
+  VOTE_LLM_EXTRACT_MAX     默认 10，并发硬上限
 EOF
             ;;
         *) die "未知子命令: $1" ;;
