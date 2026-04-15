@@ -59,6 +59,14 @@ VOTE_AUTO_COLLECT=0 "${CLAUDE_PLUGIN_ROOT}/scripts/lib/discuss-vote.sh" ask --qu
 - **vote → discuss jsonl 回写**：`type=vote_report` 事件，promote 默认忽略。
 - **UUID vote_id + list/cancel**：同秒并发不碰撞，历史可查可撤。
 
+## v0.6 新增
+
+- **pane 无限化 + LLM 压缩兜底**：`tmux capture-pane -S -` 抽 tmux 底层所有 scrollback，超 `VOTE_LLM_COMPRESS_THRESHOLD`（默认 150000 字符）自动 LLM 压缩后再 extract。长讨论不再丢信息。
+- **`--files <spec>` 文件上下文注入**：paste 时把文件内容自动塞进 header。支持单文件 / 行号范围 / glob：
+  - `path`、`path:42-120`、`path:L42-L120`
+  - `src/**/*.go`、`src/**/*.go:1-50`
+- **`--auto-promote [profile]` 自动化闭环**：vote 产出 LLM 综合的"## 建议决策"段 → 自动构造 brief → 调 `discuss-relay.sh promote --brief-file` → 从 discuss 切 execute 模式，无需人肉跑 `/swarm-promote`。
+
 ## 环境变量
 
 | Env | 默认 | 说明 |
@@ -75,6 +83,9 @@ VOTE_AUTO_COLLECT=0 "${CLAUDE_PLUGIN_ROOT}/scripts/lib/discuss-vote.sh" ask --qu
 | `VOTE_LLM_EXTRACT_TIMEOUT` | 30 | LLM extract 单次调用超时秒数 |
 | `VOTE_LLM_EXTRACT_PARALLEL` | pending 人数 | LLM extract 并发度 |
 | `VOTE_LLM_EXTRACT_MAX` | 10 | LLM extract 并发硬上限（防资源挤爆） |
+| `VOTE_LLM_COMPRESS_THRESHOLD` | 150000 | pane 字符数超此值触发 LLM 压缩（≈ 40K token） |
+| `VOTE_LLM_COMPRESS_TIMEOUT` | 60 | LLM 压缩调用超时秒数 |
+| `VOTE_FILES_MAX_BYTES` | 10485760 | `--files` 注入总字节硬顶（10MB） |
 
 ## 典型用例
 
@@ -157,6 +168,34 @@ discuss-vote.sh list                      # 列历史投票
 # vote-1712... [R2/3 | 2/3 答]  方案 A 还是 B？
 
 discuss-vote.sh cancel --id <vote-id>     # 取消并删 vote 目录
+```
+
+### 7. 代码评审（v0.6.1 `--files`）
+
+```bash
+# 对照一批代码文件 + README 做决策，不用人肉 paste
+discuss-vote.sh ask \
+    --question "这批 lib 该不该抽象成单独的库？" \
+    --participants cx,cl,gm \
+    --files 'scripts/lib/*.sh,docs/ARCHITECTURE.md:L1-L50'
+# 参与者 pane 里自动看到文件内容块，LLM 基于实码评审
+```
+
+### 8. 自动闭环（v0.6.2 `--auto-promote`）
+
+```bash
+# 投票 + 自动 promote：讨论 → 投票 → execute 一条龙
+discuss-vote.sh ask \
+    --question "下一步做哪个？A/B/C" \
+    --participants cx,cl \
+    --auto-promote full-stack
+
+# 投票完成后自动：
+# 1. LLM 综合给出"## 建议决策"段
+# 2. 生成 brief-for-promote.md
+# 3. 调 discuss-relay.sh promote --brief-file ... --profile full-stack
+# 4. tmux session 从 discuss 切到 execute
+# 5. supervisor 收到首条消息（建议决策作为 brief）
 ```
 
 $ARGUMENTS
