@@ -276,7 +276,10 @@ cmd_ask() {
 # 底部非空行命中提示符模式即视为"CLI 在等输入"
 _vote_hit_prompt() {
     local raw="$1"
-    local tail; tail=$(printf '%s\n' "$raw" | sed '/^[[:space:]]*$/d' | tail -6)
+    # v0.6.4: tail -6 → -20。Claude TUI 把 ❯ 放在底部第 8 行，下接 7 行
+    # status bar（[Opus N M context] / 上下文 / 用量 / 本周 / ⏱️）。
+    # tail -6 永远抓不到 prompt → quiet_hits 卡 0 → vote 永远不达稳定。
+    local tail; tail=$(printf '%s\n' "$raw" | sed '/^[[:space:]]*$/d' | tail -20)
     grep -qE "$VOTE_PROMPT_PATTERNS" <<<"$tail"
 }
 
