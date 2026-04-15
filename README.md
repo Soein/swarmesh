@@ -11,7 +11,7 @@ Swarmesh 现在可作为 **Claude Code 插件**使用，提供两种协作模式
 | 模式 | 何时用 | 启动命令 |
 |---|---|---|
 | **discuss** | 想和多个 CLI（Codex / Claude / Gemini）圆桌讨论、碰方案。v0.2 起 CLI 回答自动流转 | `/swarm-chat <项目> <cli>` |
-| **vote** | 想对多个 CLI 做"独立判断、互不可见"的投票（对标 pal consensus） | `/swarm-vote "<问题>"` |
+| **vote** | 多 CLI 隔离投票 + LLM 综合（对标 pal consensus，**v0.6 起多轮辩论 + 文件注入 + 自动闭环**） | `/swarm-vote "<问题>"` |
 | **execute** | 方案已定，要由 supervisor 拆任务派发给全角色团队 | `/swarm-start <项目> [profile]` |
 
 ### 安装
@@ -46,18 +46,74 @@ claude --plugin-dir ~/项目/tmux并行
 - **v0.2 新增**：Codex 首次进新目录的 trust 提示自动接受（`DISCUSS_CODEX_TRUST_AUTO=1`）
 - 防回环：`@ 自己` 自动跳过
 
-### vote 模式（v0.2 新增）
+### vote 模式（v0.2 起，v0.6 大幅增强）
+
+#### 基础投票
 
 ```bash
 /swarm-chat ~/app codex cx
 /swarm-chat-add cl "claude"
 /swarm-chat-add gm "gemini"
 /swarm-vote "Redis vs DynamoDB 做会话缓存？"
-# ... 等 30-60 秒 ...
-# 根据返回的 vote_id 手动收集 + 出报告（slash 流程里会自动调用）
+# 30-60 秒后自动出报告（含 LLM 综合的共识/分歧/各方立场/建议决策四段）
 ```
 
 三个 CLI 收到同一个问题**独立作答、互不可见**，避免讨论模式的羊群效应。
+
+#### v0.3-v0.6 演进的能力
+
+| 能力 | 引入版本 | 用法 |
+|---|---|---|
+| 稳定性判定（hash + prompt 防抖，避免半截答案） | v0.3-A | 自动 |
+| LLM 综合分析（共识/分歧/各方立场/建议决策） | v0.3-B | 自动；`VOTE_LLM_DISABLE=1` 关闭 |
+| Quorum / 法定人数 | v0.4 | `--min-responses N` |
+| Vote → discuss session.jsonl 回写 | v0.4 | 自动（在 discuss 内发起时） |
+| **LLM-assisted extract**（删启发式黑名单） | **v0.5** | 自动；status ∈ {answer,abstain,incomplete,no_answer} |
+| **Stance 分组**（pro/con/neutral/other） | **v0.5.1** | 自动；report 按立场聚段 |
+| **多轮辩论**（看完别人答案再修正立场） | **v0.5.2** | `--rounds N` + `next-round` 子命令 |
+| UUID + list/cancel | v0.5.3 | `discuss-vote.sh list` / `cancel --id` |
+| **pane 无限 capture + LLM 压缩兜底** | **v0.6.0** | 自动；超 150K 字符触发 |
+| **`--files` 文件上下文注入**（glob + 行号） | **v0.6.1** | `--files 'src/**/*.go:L1-L50,README.md'` |
+| **`--auto-promote` 自动闭环** | **v0.6.2** | `--auto-promote <profile>`；最终轮综合后自动 promote |
+
+#### 复杂用例
+
+```bash
+# 1. 代码评审型投票（v0.6.1 文件注入）
+discuss-vote.sh ask \
+    --question "这个重构合理吗？" \
+    --participants cx,cl,gm \
+    --files 'src/lib/*.sh:L1-L100,docs/ARCHITECTURE.md' \
+    --min-responses 2
+
+# 2. 多轮辩论（v0.5.2，3 轮，每轮看上轮立场）
+ID=$(discuss-vote.sh ask --rounds 3 --question "方案 A vs B vs C？" | tail -1)
+discuss-vote.sh collect --id $ID
+discuss-vote.sh report --id $ID
+discuss-vote.sh next-round --id $ID    # paste 上轮立场 + 重置 expect
+discuss-vote.sh collect --id $ID
+# 重复直到最终轮
+
+# 3. 全自动闭环（v0.6.2）：投票 → 综合 → 自动起 execute
+discuss-vote.sh ask \
+    --question "下一步做什么？" \
+    --participants cx,cl \
+    --auto-promote full-stack
+# 最终轮 LLM 综合给出"## 建议决策"段后，自动：
+# - 生成 brief-for-promote.md
+# - 调 discuss-relay.sh promote --brief-file ... --profile full-stack
+# - tmux 切到 execute session，supervisor 拿到 brief 开工
+```
+
+#### 和 pal consensus 对比（v0.6 后）
+
+| 维度 | pal | swarm |
+|---|---|---|
+| 多模型投票 / 综合 / stance / confidence / abstain / quorum / relevant-files | ✅ | ✅ |
+| 多轮辩论（参与者看到对方立场再修正） | ❌ | ✅ |
+| 参与者自带 skills / MCP / plugins / 文件读写工具 | ❌ | ✅ |
+| 投票 → execute 自动闭环 | ❌ | ✅ |
+| MCP 调用 / 秒级延迟 / 无状态 | ✅ | ❌（CLI + tmux） |
 
 ### execute 模式速览
 
@@ -83,7 +139,7 @@ claude --plugin-dir ~/项目/tmux并行
 | `/swarm-chat` | discuss | 启动圆桌 |
 | `/swarm-chat-add` | discuss | 加参与者 |
 | `/swarm-chat-msg` | discuss | 发消息（@点名，v0.2 自动流转） |
-| `/swarm-vote` | discuss | **v0.2** 隔离投票（对标 pal consensus） |
+| `/swarm-vote` | discuss | 隔离投票（**v0.6**：LLM-first + 多轮辩论 + 文件注入 + 自动闭环） |
 | `/swarm-promote` | discuss→execute | 结案转落地 |
 | `/swarm-status` | 通用 | 查看状态 |
 | `/swarm-stop` | 通用 | 停止 |
