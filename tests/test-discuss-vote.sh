@@ -483,6 +483,77 @@ VOTE_LLM_DISABLE=0 out6b=$(cmd_report --id "$vote_id")
 grep -q '关键词统计' <<<"$out6b" && pass "LLM 失败时回退关键词" || fail "失败回退缺"
 unset -f _llm_analyze_answers
 
+section "Test 19: v0.6.0 pane 超阈值触发 LLM 压缩"
+# 让 tmux mock 返回超长字符串（> 默认阈值 150000）
+cmd_ask --question "long-q?" --participants cx >/dev/null
+v19_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
+v19_id=$(basename "$v19_dir")
+
+# 构造 200K 字符的 pane 原文（文件方式，避免 env ARG_MAX）
+_long_pane_file="$VOTE_ROOT/.long-pane.txt"
+yes 'a very long pane line with noise' | head -7000 | tr -d '\n' | head -c 200000 > "$_long_pane_file"
+echo "" >> "$_long_pane_file"
+echo "❯" >> "$_long_pane_file"
+export _long_pane_file
+tmux() {
+    case "$1" in
+        has-session) return 0 ;;
+        capture-pane) cat "$_long_pane_file" ;;
+        *) return 0 ;;
+    esac
+}
+export -f tmux
+
+# mock _llm_compress 返回短摘要 + 记日志到文件便于断言
+_llm_compress_called="$VOTE_ROOT/.compress_called"
+: > "$_llm_compress_called"
+_llm_compress() {
+    local _q="$1"
+    local _in; _in=$(cat)
+    # 断言输入确实是超长 pane（长度 > 150K）
+    echo "called:${#_in}" >> "$_llm_compress_called"
+    printf 'compressed summary\n❯'
+}
+export -f _llm_compress
+
+# mock LLM extract 期望收到"compressed summary"而不是原始长字符串
+_llm_extract_answer() {
+    local _q="$1"; local _raw; _raw=$(cat)
+    if [[ "$_raw" == *"compressed summary"* ]]; then
+        jq -n '{status:"answer", content:"extracted from compressed", confidence:0.9, stance:"neutral", abstain_reason:null}'
+    else
+        jq -n '{status:"error"}'
+    fi
+}
+export -f _llm_extract_answer
+
+# subshell 包 cmd_collect，避免 die exit 杀 test
+( cmd_collect --id "$v19_id" >/dev/null 2>&1 ) || true
+
+[[ -s "$_llm_compress_called" ]] && pass "_llm_compress 被调用（pane 超阈值）" \
+    || fail "压缩未触发"
+call_line=$(head -1 "$_llm_compress_called")
+called_size="${call_line#called:}"
+(( called_size > 150000 )) && pass "压缩输入 ${called_size} 字符 > 阈值 150000" \
+    || fail "输入字符数不对: $call_line"
+grep -q 'extracted from compressed' "$v19_dir/answer-cx.md" 2>/dev/null \
+    && pass "extract 看到的是压缩后内容" || fail "answer: $(cat "$v19_dir/answer-cx.md" 2>/dev/null)"
+
+# 恢复默认 mock
+unset -f _llm_compress _llm_extract_answer
+_llm_extract_answer() {
+    local _q="$1"; local _raw; _raw=$(cat)
+    jq -n \
+        --arg st "${MOCK_LLM_STATUS:-answer}" \
+        --arg c  "${MOCK_LLM_CONTENT:-mocked answer}" \
+        --arg r  "${MOCK_LLM_ABSTAIN_REASON:-}" \
+        --arg sn "${MOCK_LLM_STANCE:-neutral}" \
+        '{status:$st, content:(if $c=="NULL" then null else $c end),
+          abstain_reason:(if $r=="" then null else $r end),
+          confidence:0.9, stance:$sn}'
+}
+export -f _llm_extract_answer
+
 printf '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
 if [[ $FAIL -eq 0 ]]; then
     printf '\033[32m✅ discuss-vote: %d/%d tests passed\033[0m\n' "$PASS" "$((PASS+FAIL))"

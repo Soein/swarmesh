@@ -44,6 +44,9 @@ VOTE_LLM_EXTRACT_CMD="${VOTE_LLM_EXTRACT_CMD:-}"          # 默认复用 VOTE_LL
 VOTE_LLM_EXTRACT_TIMEOUT="${VOTE_LLM_EXTRACT_TIMEOUT:-30}"
 VOTE_LLM_EXTRACT_PARALLEL="${VOTE_LLM_EXTRACT_PARALLEL:-}" # 未设 = 参与者数
 VOTE_LLM_EXTRACT_MAX="${VOTE_LLM_EXTRACT_MAX:-10}"         # 硬上限防资源挤爆
+# v0.6: pane 无限化 + LLM 压缩兜底
+VOTE_LLM_COMPRESS_THRESHOLD="${VOTE_LLM_COMPRESS_THRESHOLD:-150000}"  # 超此字符数触发压缩
+VOTE_LLM_COMPRESS_TIMEOUT="${VOTE_LLM_COMPRESS_TIMEOUT:-60}"
 
 die()  { echo "[vote] ERROR: $*" >&2; exit 1; }
 info() { echo "[vote] $*"; }
@@ -241,7 +244,8 @@ cmd_collect() {
         [[ -z "$pane" ]] && continue
         [[ -f "$vote_dir/expect-$n.flag" ]] || continue
 
-        local raw; raw=$(tmux capture-pane -t "${DISCUSS_SESSION_NAME}:${pane}" -p -S -500 2>/dev/null \
+        # v0.6: -S - 抽底层 tmux history，无硬截上限
+        local raw; raw=$(tmux capture-pane -t "${DISCUSS_SESSION_NAME}:${pane}" -p -S - 2>/dev/null \
             | sed -E $'s/\x1b\\[[0-9;?]*[a-zA-Z]//g' | tr -d '\r')
         [[ -n "$raw" ]] || continue
 
@@ -262,6 +266,15 @@ cmd_collect() {
         if (( quiet_hits < VOTE_STABLE_HITS )); then
             info "⏳ @$n 尚未稳定 ($quiet_hits/$VOTE_STABLE_HITS)"
             continue
+        fi
+        # v0.6: pane 超阈值先 LLM 压缩，再进 extract 流水
+        if (( ${#raw} > VOTE_LLM_COMPRESS_THRESHOLD )); then
+            info "🗜 @$n pane 原文 ${#raw} 字符超阈值 ${VOTE_LLM_COMPRESS_THRESHOLD}，LLM 压缩中"
+            local compressed
+            compressed=$(printf '%s' "$raw" | _llm_compress "$question") \
+                || die "@$n LLM 压缩失败"
+            raw="$compressed"
+            info "🗜 @$n 压缩后 ${#raw} 字符"
         fi
         # 写入待 extract 文件供 Phase 2 并发消费
         printf '%s' "$raw" > "$vote_dir/.pending-$n.raw"
@@ -343,6 +356,41 @@ _pick_llm_cmd() {
     elif command -v gemini >/dev/null 2>&1; then echo "gemini -p"
     else return 1
     fi
+}
+
+# v0.6: LLM 压缩超长 pane 原文 ---------------------------------------
+# 入参:
+#   $1 question
+#   stdin: 超长 pane 原文
+# 出参:
+#   stdout: 压缩后文本（保留答案/ABSTAIN/关键引用，剥离无关噪音）
+# 失败:
+#   return 1
+_llm_compress() {
+    local question="$1"
+    local llm_cmd; llm_cmd=$(_pick_llm_cmd "$VOTE_LLM_EXTRACT_CMD") || return 1
+    local raw; raw=$(cat)
+    local prompt
+    prompt=$(cat <<PROMPT
+你是投票助手的上下文压缩器。以下 pane 输出太长，无法整段喂给抽取 LLM。
+请保留与以下问题相关的内容，剥离无关噪音：
+
+问题：$question
+
+--- pane 原文 ---
+$raw
+--- 原文结束 ---
+
+保留：对问题的回答/推理、ABSTAIN 声明、关键引用的文件内容
+剥离：CLI 启动横幅/提示符/版本信息、与本问题无关的历史讨论、纯工具调用日志
+只输出压缩后的文本，不要 markdown 代码块包裹、不要寒暄。
+PROMPT
+)
+    local out
+    # shellcheck disable=SC2086
+    out=$(printf '%s' "$prompt" | _vote_exec_timeout "$VOTE_LLM_COMPRESS_TIMEOUT" $llm_cmd 2>/dev/null) || return 1
+    [[ -n "$out" ]] || return 1
+    printf '%s' "$out"
 }
 
 # v0.5: LLM 抽取+分类单个参与者的 pane 输出 -------------------------
