@@ -50,7 +50,7 @@
     "config_send_delay": 2
   },
   "metadata": {
-    "author": "tmux-swarm-dev",
+    "author": "swarmesh-dev",
     "purpose": "阶段 1 验证测试",
     "use_cases": [
       "概念验证",

@@ -1,13 +1,13 @@
 {
-  "name": "tmux-swarm-marketplace",
+  "name": "swarmesh-marketplace",
   "owner": {
-    "name": "pzy"
+    "name": "Soein"
   },
   "plugins": [
     {
-      "name": "tmux-swarm",
+      "name": "swarmesh",
       "source": ".",
-      "description": "Multi-CLI swarm in tmux with discuss and execute modes."
+      "description": "Multi-CLI swarm in tmux with discuss / vote (v0.6: LLM-first, multi-round, files injection, auto-promote) / execute modes."
     }
   ]
 }

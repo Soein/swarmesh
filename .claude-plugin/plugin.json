@@ -1,20 +1,24 @@
 {
-  "name": "tmux-swarm",
-  "version": "0.2.1",
-  "description": "Multi-CLI swarm in tmux: auto roundtable discussion (Codex↔Claude↔Gemini with pane output watcher), isolated voting (consensus-style), or dispatch a full 15-role swarm via supervisor.",
+  "name": "swarmesh",
+  "version": "0.6.4",
+  "description": "Multi-CLI swarm in tmux. discuss (roundtable with Codex/Claude/Gemini) + vote (LLM-first consensus with multi-round debate, file injection, auto-promote to execute) + execute (15-role supervisor dispatch). v0.6 delivers feature parity with pal consensus plus tmux-only strengths: participants use real CLI tools, multi-round rebuttal, vote→execute automation.",
   "author": {
-    "name": "pzy"
+    "name": "Soein"
   },
-  "homepage": "https://github.com/pzy/tmux-swarm",
+  "homepage": "https://github.com/Soein/swarmesh",
   "license": "BSL-1.1",
   "keywords": [
     "tmux",
     "swarm",
+    "swarmesh",
     "codex",
     "claude-code",
     "gemini",
     "multi-agent",
     "orchestration",
-    "discuss"
+    "discuss",
+    "consensus",
+    "vote",
+    "llm"
   ]
 }

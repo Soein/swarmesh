@@ -58,7 +58,7 @@ if [[ "$MODE" == "json" ]]; then
 fi
 
 if [[ ${#missing_required[@]} -gt 0 ]]; then
-    echo "⚠️  tmux-swarm 插件缺少必需依赖: ${missing_required[*]}"
+    echo "⚠️  swarmesh 插件缺少必需依赖: ${missing_required[*]}"
     echo "   安装建议 (macOS): brew install ${missing_required[*]}"
     echo "   安装建议 (Linux): apt install ${missing_required[*]}  # 或 pacman/yum"
     exit 1
@@ -67,7 +67,7 @@ fi
 if [[ "$MODE" == "quiet" ]]; then
     # hook 模式：仅在可选 CLI 全缺失时提示
     if [[ ${#missing_optional[@]} -eq ${#OPTIONAL[@]} ]]; then
-        echo "ℹ️  tmux-swarm: 未检测到任何 AI CLI (${OPTIONAL[*]})，安装后才能启动蜂群。"
+        echo "ℹ️  swarmesh: 未检测到任何 AI CLI (${OPTIONAL[*]})，安装后才能启动蜂群。"
     fi
     exit 0
 fi

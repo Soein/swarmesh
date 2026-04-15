@@ -149,7 +149,7 @@
     "config_send_delay": 2
   },
   "metadata": {
-    "author": "tmux-swarm-dev",
+    "author": "swarmesh-dev",
     "purpose": "全栈开发完整团队配置",
     "use_cases": [
       "大型全栈 Web 应用开发",

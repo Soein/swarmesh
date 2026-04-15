@@ -18,8 +18,8 @@ Swarmesh 现在可作为 **Claude Code 插件**使用，提供两种协作模式
 
 ```bash
 # 在 Claude Code 中：
-/plugin marketplace add <你的 GitHub 用户>/tmux-swarm
-/plugin install tmux-swarm
+/plugin marketplace add Soein/swarmesh
+/plugin install swarmesh
 ```
 
 或本地测试：
