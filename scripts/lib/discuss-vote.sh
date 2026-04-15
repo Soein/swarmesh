@@ -68,8 +68,58 @@ _ensure_runtime() {
     mkdir -p "$VOTE_ROOT"
 }
 
+# v0.6.1: 按 spec 加载文件内容为 markdown 块 ---------------------------
+# spec 格式: path1,path2:L10-L20,src/**/*.go
+_load_files_for_vote() {
+    local spec="$1"
+    local out="" total=0
+    local cap=${VOTE_FILES_MAX_BYTES:-10485760}  # 10MB 硬顶
+    shopt -s globstar nullglob 2>/dev/null
+    local IFS=','
+    local entry
+    for entry in $spec; do
+        local path range start end
+        if [[ "$entry" =~ ^(.+):L?([0-9]+)-L?([0-9]+)$ ]]; then
+            path="${BASH_REMATCH[1]}"
+            start="${BASH_REMATCH[2]}"
+            end="${BASH_REMATCH[3]}"
+            range="L${start}-L${end}"
+        else
+            path="$entry"; range=""; start=""; end=""
+        fi
+        local -a matched=()
+        # shellcheck disable=SC2206
+        matched=( $path )
+        if (( ${#matched[@]} == 0 )); then
+            info "⚠ 无文件匹配: $path"
+            continue
+        fi
+        local f
+        for f in "${matched[@]}"; do
+            [[ -f "$f" && -r "$f" ]] || continue
+            local content
+            if [[ -n "$range" ]]; then
+                content=$(sed -n "${start},${end}p" "$f")
+            else
+                content=$(cat "$f")
+            fi
+            local size=${#content}
+            if (( total + size > cap )); then
+                info "⚠ 文件注入累计达上限 ${cap} 字节，停止注入"
+                break 2
+            fi
+            total=$((total + size))
+            out+=$'\n### '"$f"
+            [[ -n "$range" ]] && out+="  (行 ${start}-${end})"
+            out+=$'\n```\n'"$content"$'\n```\n'
+        done
+    done
+    shopt -u globstar nullglob 2>/dev/null
+    printf '%s' "$out"
+}
+
 _paste_isolated() {
-    local pane="$1" question="$2" cli_type="$3" vote_id="${4:-}"
+    local pane="$1" question="$2" cli_type="$3" vote_id="${4:-}" files_block="${5:-}"
     local start_tag="" end_tag="" marker_block=""
     if [[ -n "$vote_id" ]]; then
         start_tag=$(printf "$VOTE_MARKER_START_TMPL" "$vote_id")
@@ -85,8 +135,12 @@ $end_tag
 MARKER
 )
     fi
+    local files_section=""
+    if [[ -n "$files_block" ]]; then
+        files_section=$'\n\n--- 相关文件 ---'"$files_block"$'--- 相关文件结束 ---\n'
+    fi
     local header
-    header=$(printf '【独立投票 · 请给出你的独立判断，不参考任何其他人】\n问题：%s%s' "$question" "$marker_block")
+    header=$(printf '【独立投票 · 请给出你的独立判断，不参考任何其他人】\n问题：%s%s%s' "$question" "$files_section" "$marker_block")
     local tmpf; tmpf=$(mktemp "${RUNTIME_DIR}/.vote-paste-XXXXXX")
     printf '%s' "$header" > "$tmpf"
     SESSION_NAME="$DISCUSS_SESSION_NAME" _pane_locked_paste_enter "$pane" "$tmpf" "$cli_type"
@@ -94,7 +148,7 @@ MARKER
 }
 
 cmd_ask() {
-    local question="" plist="" timeout="$VOTE_DEFAULT_TIMEOUT" min_responses="" rounds="1"
+    local question="" plist="" timeout="$VOTE_DEFAULT_TIMEOUT" min_responses="" rounds="1" files_spec=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --question)      question="$2";      shift 2 ;;
@@ -102,6 +156,7 @@ cmd_ask() {
             --timeout)       timeout="$2";       shift 2 ;;
             --min-responses) min_responses="$2"; shift 2 ;;
             --rounds)        rounds="$2";        shift 2 ;;
+            --files)         files_spec="$2";    shift 2 ;;
             *) die "ask: 未知参数 $1" ;;
         esac
     done
@@ -128,9 +183,14 @@ cmd_ask() {
         names_json=$(jq '.discuss.participants | map(.name)' "$STATE_FILE")
     fi
 
-    # 元数据（v0.4: min_responses 未传则存 null / v0.5.2: rounds + current_round）
+    # 元数据（v0.4: min_responses 未传则存 null / v0.5.2: rounds + current_round /
+    # v0.6.1: files 清单）
     local mr_json="null"
     [[ -n "$min_responses" ]] && mr_json="$min_responses"
+    local files_json="[]"
+    if [[ -n "$files_spec" ]]; then
+        files_json=$(printf '%s\n' ${files_spec//,/ } | jq -R . | jq -s .)
+    fi
     jq -n \
         --arg question "$question" \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -138,14 +198,22 @@ cmd_ask() {
         --argjson timeout "$timeout" \
         --argjson mr "$mr_json" \
         --argjson rounds "$rounds" \
+        --argjson files "$files_json" \
         '{id: "'"$vote_id"'", question:$question, ts:$ts,
           participants:$participants, timeout:$timeout, min_responses:$mr,
-          rounds:$rounds, current_round:1}' \
+          rounds:$rounds, current_round:1, files:$files}' \
         > "$vote_dir/meta.json"
 
     info "🗳  发起投票 $vote_id"
     info "   问题: $question"
     info "   参与者: $(jq -r 'join(",")' <<<"$names_json")"
+
+    # v0.6.1: --files 注入（一次性构造 files_block，每个参与者共用）
+    local files_block=""
+    if [[ -n "$files_spec" ]]; then
+        files_block=$(_load_files_for_vote "$files_spec")
+        info "   📎 注入文件 ${files_spec} (${#files_block} 字符)"
+    fi
 
     # 同时 paste 给每个参与者，注意严格隔离——不走 discuss-relay post，不广播
     local names; names=$(jq -r '.[]' <<<"$names_json")
@@ -154,7 +222,7 @@ cmd_ask() {
         pane=$(jq -r --arg n "$n" '.discuss.participants[] | select(.name==$n) | .pane' "$STATE_FILE")
         cli_type=$(jq -r --arg n "$n" '.discuss.participants[] | select(.name==$n) | .cli_type' "$STATE_FILE")
         [[ -z "$pane" ]] && { info "   ⚠ $n 不在 participants，跳过"; continue; }
-        _paste_isolated "$pane" "$question" "$cli_type" "$vote_id"
+        _paste_isolated "$pane" "$question" "$cli_type" "$vote_id" "$files_block"
         info "   ➡ 已 paste 到 @$n (pane $pane)"
         # 登记预期回答
         printf '%s' "$n" > "$vote_dir/expect-$n.flag"

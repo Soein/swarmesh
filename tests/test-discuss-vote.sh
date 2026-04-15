@@ -66,7 +66,8 @@ export -f _llm_extract_answer
 MOCK_PASTE="$TEST_ROOT/paste.journal"
 : > "$MOCK_PASTE"
 _paste_isolated() {
-    echo "PASTE|pane=$1|q=$2|cli=$3" >> "$MOCK_PASTE"
+    # v0.6.1: 把 files_block ($5) 也写进 journal 便于测试断言
+    echo "PASTE|pane=$1|q=$2|cli=$3|vote_id=${4:-}|files=${5:-}" >> "$MOCK_PASTE"
 }
 tmux() {
     case "$1" in
@@ -422,8 +423,8 @@ cmd_collect --id "$v13_id" >/dev/null
 cmd_next_round --id "$v13_id" >/dev/null
 
 [[ -d "$v13_dir/round1" ]] && pass "round1/ 目录已创建" || fail "归档目录缺"
-[[ -f "$v13_dir/round1/answer-cx.md" ]] && pass "cx R1 答案归档" || fail
-[[ -f "$v13_dir/round1/answer-cl.md" ]] && pass "cl R1 答案归档" || fail
+[[ -f "$v13_dir/round1/answer-cx.md" ]] && pass "cx R1 答案归档" || fail "cx R1 归档缺"
+[[ -f "$v13_dir/round1/answer-cl.md" ]] && pass "cl R1 答案归档" || fail "cl R1 归档缺"
 [[ ! -f "$v13_dir/answer-cx.md" ]] && pass "顶层 answer-cx.md 被清" || fail "R1 未清理"
 [[ -f "$v13_dir/expect-cx.flag" ]] && [[ -f "$v13_dir/expect-cl.flag" ]] \
     && pass "R2 expect flags 已重置" || fail "expect 未重置"
@@ -463,7 +464,7 @@ section "Test 16: v0.5.3 cmd_cancel 删除 vote"
 cmd_ask --question "cancel-q?" --participants cx >/dev/null
 v16_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
 v16_id=$(basename "$v16_dir")
-[[ -d "$v16_dir" ]] && pass "vote 已创建" || fail
+[[ -d "$v16_dir" ]] && pass "vote 已创建" || fail "vote 未创建"
 cmd_cancel --id "$v16_id" >/dev/null
 [[ ! -d "$v16_dir" ]] && pass "cancel 后目录已删" || fail "目录仍存"
 
@@ -482,6 +483,48 @@ _llm_analyze_answers() { return 1; }
 VOTE_LLM_DISABLE=0 out6b=$(cmd_report --id "$vote_id")
 grep -q '关键词统计' <<<"$out6b" && pass "LLM 失败时回退关键词" || fail "失败回退缺"
 unset -f _llm_analyze_answers
+
+section "Test 17: v0.6.1 --files 单文件注入"
+# 准备测试文件
+f17="$TEST_ROOT/f17.go"
+cat > "$f17" <<EOF
+package main
+func main() {
+    println("hello")
+}
+EOF
+: > "$MOCK_PASTE"
+cmd_ask --question "文件注入?" --participants cx --files "$f17" >/dev/null
+v17_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
+v17_id=$(basename "$v17_dir")
+
+# MOCK_PASTE 里应含文件路径 + 文件内容（通过 mock_paste_isolated 的 q 参数）
+grep -q "f17.go" "$MOCK_PASTE" && pass "paste 含文件路径" || fail "缺路径"
+grep -q 'println("hello")' "$MOCK_PASTE" && pass "paste 含文件内容" \
+    || fail "缺内容: $(cat "$MOCK_PASTE")"
+
+# meta.json 记文件清单
+jq -e '.files | length == 1' "$v17_dir/meta.json" >/dev/null \
+    && pass "meta.files 记录" || fail "files: $(jq -c .files "$v17_dir/meta.json")"
+
+section "Test 18: v0.6.1 glob + 行号范围"
+mkdir -p "$TEST_ROOT/src"
+echo "line1" > "$TEST_ROOT/src/a.go"
+for i in $(seq 1 10); do echo "line $i" >> "$TEST_ROOT/src/b.go"; done
+: > "$MOCK_PASTE"
+# 单文件行号范围 L3-L5
+cmd_ask --question "行号?" --participants cx --files "$TEST_ROOT/src/b.go:L3-L5" >/dev/null
+v18_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
+grep -q 'line 3' "$MOCK_PASTE" && pass "行号范围含 L3" || fail "L3 缺"
+grep -q 'line 5' "$MOCK_PASTE" && pass "行号范围含 L5" || fail "缺 L5"
+grep -q 'line 1$' "$MOCK_PASTE" && fail "L3-L5 不应含 L1" || pass "L3-L5 正确过滤 L1"
+
+# glob 展开
+: > "$MOCK_PASTE"
+cmd_ask --question "glob?" --participants cx --files "$TEST_ROOT/src/*.go" >/dev/null
+v18b_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
+grep -q 'a.go' "$MOCK_PASTE" && grep -q 'b.go' "$MOCK_PASTE" \
+    && pass "glob 展开含两文件" || fail "glob 漏"
 
 section "Test 19: v0.6.0 pane 超阈值触发 LLM 压缩"
 # 让 tmux mock 返回超长字符串（> 默认阈值 150000）
