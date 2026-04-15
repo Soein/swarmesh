@@ -604,6 +604,40 @@ grep -q '未给出明确.*建议决策\|跳过 auto-promote' <<<"$out21" \
 ! grep -q 'PROMOTE_CALLED' "$_promote_log" \
     && pass "无决策时 promote 未调" || fail "不该调 promote"
 
+section "Test 22: v0.6.3 多轮辩论 auto-promote 仅最终轮触发"
+cmd_ask --question "round-promote?" --participants cx --rounds 2 --auto-promote x >/dev/null
+v22_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
+v22_id=$(basename "$v22_dir")
+cmd_collect --id "$v22_id" >/dev/null
+
+# mock LLM 综合给"## 建议决策"
+_llm_analyze_answers() { printf '## 建议决策\n\n直接做\n'; }
+
+# mock discuss-relay.sh promote
+_promote_log22="$VOTE_ROOT/.promote_22"
+: > "$_promote_log22"
+_mock_bin22="$VOTE_ROOT/mock-bin-22"
+mkdir -p "$_mock_bin22"
+cat > "$_mock_bin22/discuss-relay.sh" <<MOCK
+#!/usr/bin/env bash
+echo "PROMOTE \$*" >> "$_promote_log22"
+MOCK
+chmod +x "$_mock_bin22/discuss-relay.sh"
+_orig_SD22="$SCRIPT_DIR"; SCRIPT_DIR="$_mock_bin22"
+
+# R1 report → 不应触发
+VOTE_LLM_DISABLE=0 cmd_report --id "$v22_id" >/dev/null
+! grep -q PROMOTE "$_promote_log22" && pass "R1 不触发 auto-promote" || fail "R1 误触发"
+
+# next-round + R2 report → 应触发
+cmd_next_round --id "$v22_id" >/dev/null
+cmd_collect --id "$v22_id" >/dev/null
+VOTE_LLM_DISABLE=0 cmd_report --id "$v22_id" >/dev/null
+grep -q PROMOTE "$_promote_log22" && pass "R2（最终轮）触发 auto-promote" || fail "R2 未触发"
+
+SCRIPT_DIR="$_orig_SD22"
+unset -f _llm_analyze_answers
+
 section "Test 19: v0.6.0 pane 超阈值触发 LLM 压缩"
 # 让 tmux mock 返回超长字符串（> 默认阈值 150000）
 cmd_ask --question "long-q?" --participants cx >/dev/null

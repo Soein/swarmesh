@@ -740,8 +740,15 @@ cmd_report() {
 
     # v0.6.2: 若开了 --auto-promote 且 LLM 综合给出了明确"## 建议决策"段
     # → 构造 brief-for-promote.md → 调 discuss-relay.sh promote --brief-file
+    # v0.6.3: 多轮辩论场景下，仅最终轮 (current_round == rounds) 触发，
+    #         否则前面轮 promote 会 kill discuss session，让后续 next-round 全废
     local ap_profile; ap_profile=$(jq -r '.auto_promote_profile // empty' "$vote_dir/meta.json")
-    if [[ -n "$ap_profile" && "$ap_profile" != "null" ]]; then
+    local _ap_cur _ap_max
+    _ap_cur=$(jq -r '.current_round // 1' "$vote_dir/meta.json")
+    _ap_max=$(jq -r '.rounds // 1' "$vote_dir/meta.json")
+    if [[ -n "$ap_profile" && "$ap_profile" != "null" ]] && (( _ap_cur < _ap_max )); then
+        info "ℹ  当前 R${_ap_cur}/${_ap_max}，未到最终轮，跳过 auto-promote"
+    elif [[ -n "$ap_profile" && "$ap_profile" != "null" ]]; then
         local syn="$vote_dir/.llm-synthesis.md"
         if [[ ! -f "$syn" ]]; then
             info "ℹ  LLM 综合未生成（LLM 不可用或失败），跳过 auto-promote"
