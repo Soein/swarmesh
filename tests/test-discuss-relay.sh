@@ -144,6 +144,41 @@ STATE_FILE="$_orig_STATE_FILE"
 DISCUSS_DIR="$_orig_DISCUSS_DIR"
 DISCUSS_LOG="$_orig_DISCUSS_LOG"
 
+section "Test 16: v0.6.2 promote --brief-file 外部 brief"
+# 准备：写一个外部 brief 文件
+_ext_brief="$TEST_ROOT/external-brief.md"
+cat > "$_ext_brief" <<EOF
+# 外部 brief 内容
+
+## 决策
+直接上 Redis。
+EOF
+# mock swarm-start.sh 和 swarm-msg.sh（避免真启 tmux session）
+mkdir -p "$TEST_ROOT/scripts-mock"
+cat > "$TEST_ROOT/scripts-mock/swarm-start.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "MOCK_START $*" > "$(dirname "$0")/../start-mock.log"
+EOF
+cat > "$TEST_ROOT/scripts-mock/swarm-msg.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "MOCK_MSG $*" > "$(dirname "$0")/../msg-mock.log"
+EOF
+chmod +x "$TEST_ROOT/scripts-mock/"*.sh
+_orig_SCRIPTS_DIR="$SCRIPTS_DIR"
+SCRIPTS_DIR="$TEST_ROOT/scripts-mock"
+# mock tmux 让 kill-session 无报错
+tmux() { return 0; }
+export -f tmux
+
+( cmd_promote --profile test --brief-file "$_ext_brief" 2>/dev/null ) || true
+
+_actual_brief="$PROJECT_DIR/.swarm/runtime/discuss/brief.md"
+[[ -f "$_actual_brief" ]] && pass "brief.md 被写入" || fail "brief.md 缺"
+diff "$_ext_brief" "$_actual_brief" >/dev/null \
+    && pass "brief.md 内容 == 外部 brief 文件" \
+    || fail "内容不同"
+SCRIPTS_DIR="$_orig_SCRIPTS_DIR"
+
 printf '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
 if [[ $FAIL -eq 0 ]]; then
     printf '\033[32m✅ discuss-relay: %d/%d tests passed\033[0m\n' "$PASS" "$((PASS+FAIL))"

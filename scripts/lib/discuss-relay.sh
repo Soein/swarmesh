@@ -340,10 +340,11 @@ cmd_list() {
 
 # ---- promote -------------------------------------------------------------
 cmd_promote() {
-    local profile="minimal"
+    local profile="minimal" brief_file=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --profile) profile="$2"; shift 2 ;;
+            --profile)    profile="$2";    shift 2 ;;
+            --brief-file) brief_file="$2"; shift 2 ;;
             *) die "promote: 未知参数 $1" ;;
         esac
     done
@@ -351,14 +352,20 @@ cmd_promote() {
     _ensure_runtime
 
     local brief="${RUNTIME_DIR}/discuss/brief.md"
-    {
-        echo "# Discuss → Execute 转接 brief"
-        echo
-        echo "_discuss 会话 $(jq -r '.session' "$STATE_FILE") 的摘要（最近 ${DISCUSS_CONTEXT_TURNS} 轮）_"
-        echo
-        tail -n "$((DISCUSS_CONTEXT_TURNS * 4))" "$DISCUSS_LOG" \
-            | jq -r 'select(.type=="message") | "## turn \(.turn) · \(.from)\n\(.content)\n"'
-    } > "$brief"
+    if [[ -n "$brief_file" ]]; then
+        [[ -f "$brief_file" ]] || die "--brief-file 不存在: $brief_file"
+        cp "$brief_file" "$brief"
+        info "📄 brief 使用外部文件: $brief_file"
+    else
+        {
+            echo "# Discuss → Execute 转接 brief"
+            echo
+            echo "_discuss 会话 $(jq -r '.session' "$STATE_FILE") 的摘要（最近 ${DISCUSS_CONTEXT_TURNS} 轮）_"
+            echo
+            tail -n "$((DISCUSS_CONTEXT_TURNS * 4))" "$DISCUSS_LOG" \
+                | jq -r 'select(.type=="message") | "## turn \(.turn) · \(.from)\n\(.content)\n"'
+        } > "$brief"
+    fi
 
     info "📄 brief 已生成: $brief"
     info "停止 discuss 并拉起 execute 模式 (profile=$profile)"

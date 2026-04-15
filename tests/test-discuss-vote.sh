@@ -526,6 +526,84 @@ v18b_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
 grep -q 'a.go' "$MOCK_PASTE" && grep -q 'b.go' "$MOCK_PASTE" \
     && pass "glob 展开含两文件" || fail "glob 漏"
 
+section "Test 20: v0.6.2 --auto-promote 完整路径"
+cmd_ask --question "promote-q?" --participants cx --auto-promote test-profile >/dev/null
+v20_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
+v20_id=$(basename "$v20_dir")
+# meta.json 应记 auto_promote_profile
+ap=$(jq -r '.auto_promote_profile' "$v20_dir/meta.json")
+[[ "$ap" == "test-profile" ]] && pass "meta.auto_promote_profile=test-profile" || fail "profile: $ap"
+
+cmd_collect --id "$v20_id" >/dev/null
+# mock _llm_analyze_answers 返回含"## 建议决策"
+_llm_analyze_answers() {
+    cat <<'EOF'
+## 共识点
+- 都觉得 Redis 有道理
+
+## 建议决策
+
+直接用 Redis 做会话缓存，延迟优先。
+EOF
+}
+
+# mock discuss-relay.sh promote 调用
+_promote_log="$VOTE_ROOT/.promote_called"
+: > "$_promote_log"
+_mock_bin="$VOTE_ROOT/mock-bin"
+mkdir -p "$_mock_bin"
+cat > "$_mock_bin/discuss-relay.sh" <<MOCK
+#!/usr/bin/env bash
+echo "PROMOTE_CALLED \$*" >> "$_promote_log"
+MOCK
+chmod +x "$_mock_bin/discuss-relay.sh"
+_orig_SCRIPT_DIR_20="$SCRIPT_DIR"
+SCRIPT_DIR="$_mock_bin"
+
+VOTE_LLM_DISABLE=0 cmd_report --id "$v20_id" >/dev/null
+
+[[ -f "$v20_dir/brief-for-promote.md" ]] && pass "brief-for-promote.md 生成" \
+    || fail "brief 缺"
+grep -q '直接用 Redis' "$v20_dir/brief-for-promote.md" && pass "brief 含决策正文" \
+    || fail "缺决策"
+grep -q 'PROMOTE_CALLED' "$_promote_log" && pass "discuss-relay.sh promote 被调用" \
+    || fail "promote 未调"
+grep -q 'brief-file' "$_promote_log" && pass "传了 --brief-file 参数" \
+    || fail "未带 --brief-file"
+grep -q 'test-profile' "$_promote_log" && pass "传了 --profile test-profile" \
+    || fail "profile 错"
+
+SCRIPT_DIR="$_orig_SCRIPT_DIR_20"
+unset -f _llm_analyze_answers
+
+section "Test 21: v0.6.2 无决策段不 die，跳过 auto-promote"
+cmd_ask --question "no-decision?" --participants cx --auto-promote x >/dev/null
+v21_dir=$(ls -dt "$VOTE_ROOT"/vote-* | head -1)
+v21_id=$(basename "$v21_dir")
+cmd_collect --id "$v21_id" >/dev/null
+
+# LLM 综合没给决策段
+_llm_analyze_answers() {
+    cat <<'EOF'
+## 共识点
+- xyz
+
+## 分歧点
+- abc
+EOF
+}
+# mock promote 以防调用
+SCRIPT_DIR="$_mock_bin"
+: > "$_promote_log"
+VOTE_LLM_DISABLE=0 out21=$(cmd_report --id "$v21_id" 2>&1)
+SCRIPT_DIR="$_orig_SCRIPT_DIR_20"
+unset -f _llm_analyze_answers
+
+grep -q '未给出明确.*建议决策\|跳过 auto-promote' <<<"$out21" \
+    && pass "无决策段打 log 跳过" || fail "应跳过: $(tail -3 <<<"$out21")"
+! grep -q 'PROMOTE_CALLED' "$_promote_log" \
+    && pass "无决策时 promote 未调" || fail "不该调 promote"
+
 section "Test 19: v0.6.0 pane 超阈值触发 LLM 压缩"
 # 让 tmux mock 返回超长字符串（> 默认阈值 150000）
 cmd_ask --question "long-q?" --participants cx >/dev/null

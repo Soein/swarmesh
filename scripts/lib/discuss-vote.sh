@@ -148,7 +148,7 @@ MARKER
 }
 
 cmd_ask() {
-    local question="" plist="" timeout="$VOTE_DEFAULT_TIMEOUT" min_responses="" rounds="1" files_spec=""
+    local question="" plist="" timeout="$VOTE_DEFAULT_TIMEOUT" min_responses="" rounds="1" files_spec="" auto_promote=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --question)      question="$2";      shift 2 ;;
@@ -157,6 +157,14 @@ cmd_ask() {
             --min-responses) min_responses="$2"; shift 2 ;;
             --rounds)        rounds="$2";        shift 2 ;;
             --files)         files_spec="$2";    shift 2 ;;
+            --auto-promote)
+                # 下一个参数可能是 profile 名，也可能是下一个 --xxx
+                if [[ -n "${2:-}" && "${2:0:2}" != "--" ]]; then
+                    auto_promote="$2"; shift 2
+                else
+                    auto_promote="minimal"; shift 1
+                fi
+                ;;
             *) die "ask: 未知参数 $1" ;;
         esac
     done
@@ -191,6 +199,8 @@ cmd_ask() {
     if [[ -n "$files_spec" ]]; then
         files_json=$(printf '%s\n' ${files_spec//,/ } | jq -R . | jq -s .)
     fi
+    local ap_json="null"
+    [[ -n "$auto_promote" ]] && ap_json="\"$auto_promote\""
     jq -n \
         --arg question "$question" \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -199,9 +209,11 @@ cmd_ask() {
         --argjson mr "$mr_json" \
         --argjson rounds "$rounds" \
         --argjson files "$files_json" \
+        --argjson ap "$ap_json" \
         '{id: "'"$vote_id"'", question:$question, ts:$ts,
           participants:$participants, timeout:$timeout, min_responses:$mr,
-          rounds:$rounds, current_round:1, files:$files}' \
+          rounds:$rounds, current_round:1, files:$files,
+          auto_promote_profile:$ap}' \
         > "$vote_dir/meta.json"
 
     info "🗳  发起投票 $vote_id"
@@ -689,6 +701,8 @@ cmd_report() {
             echo
             echo "$llm_out"
             echo
+            # v0.6.2: 持久化综合段，供 auto-promote 解析 "## 建议决策"
+            printf '%s' "$llm_out" > "$vote_dir/.llm-synthesis.md"
         else
             echo "## 简易关键词统计（所有回答合并·LLM 不可用）"
             echo
@@ -722,6 +736,65 @@ cmd_report() {
               participants:$p, answered:$a, abstained:$ab,
               quorum_met: ($qw == 0)}' \
             >> "$dlog"
+    fi
+
+    # v0.6.2: 若开了 --auto-promote 且 LLM 综合给出了明确"## 建议决策"段
+    # → 构造 brief-for-promote.md → 调 discuss-relay.sh promote --brief-file
+    local ap_profile; ap_profile=$(jq -r '.auto_promote_profile // empty' "$vote_dir/meta.json")
+    if [[ -n "$ap_profile" && "$ap_profile" != "null" ]]; then
+        local syn="$vote_dir/.llm-synthesis.md"
+        if [[ ! -f "$syn" ]]; then
+            info "ℹ  LLM 综合未生成（LLM 不可用或失败），跳过 auto-promote"
+        else
+            # 提取 "## 建议决策" 到下一个 ## 之前的段落
+            local decision
+            decision=$(awk '
+                /^## 建议决策/ { found=1; next }
+                /^## / && found { found=0 }
+                found { print }
+            ' "$syn" | sed '/^[[:space:]]*$/d' | awk 'NF')
+            if [[ -z "$decision" ]]; then
+                info "ℹ  LLM 未给出明确 ## 建议决策 段，跳过 auto-promote"
+            else
+                local pbrief="$vote_dir/brief-for-promote.md"
+                {
+                    echo "# 自动提升 brief (vote ${vote_id})"
+                    echo
+                    echo "## 原问题"
+                    echo
+                    echo "$question"
+                    echo
+                    echo "## 立场分布"
+                    echo
+                    for stance_key in pro con neutral other; do
+                        local ns=""
+                        for n in $names; do
+                            [[ -f "$vote_dir/abstain-$n.md" ]] && continue
+                            local n_stance="other"
+                            [[ -f "$vote_dir/meta-$n.json" ]] && n_stance=$(jq -r '.stance // "other"' "$vote_dir/meta-$n.json")
+                            case "$n_stance" in pro|con|neutral) ;; *) n_stance=other ;; esac
+                            [[ "$n_stance" == "$stance_key" ]] && ns+="${n} "
+                        done
+                        [[ -n "$ns" ]] && echo "- $stance_key: $ns"
+                    done
+                    local abs_list=""
+                    for n in $names; do
+                        [[ -f "$vote_dir/abstain-$n.md" ]] && abs_list+="${n} "
+                    done
+                    [[ -n "$abs_list" ]] && echo "- 弃权: $abs_list"
+                    echo
+                    echo "## LLM 综合建议决策"
+                    echo
+                    echo "$decision"
+                    echo
+                    echo "---"
+                    echo "_由 discuss-vote.sh --auto-promote 自动生成_"
+                } > "$pbrief"
+                info "🚀 auto-promote 触发：brief=$pbrief profile=$ap_profile"
+                "$SCRIPT_DIR/discuss-relay.sh" promote --brief-file "$pbrief" --profile "$ap_profile" \
+                    || info "⚠ auto-promote 调用 discuss-relay.sh promote 失败"
+            fi
+        fi
     fi
 }
 
