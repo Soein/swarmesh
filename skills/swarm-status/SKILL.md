@@ -10,12 +10,12 @@ description: Show current swarm state (execute or discuss mode), online roles/pa
 ## 1. 定位 plugin root
 
 ```bash
-SWARM_ROOT="${SWARM_ROOT:-}"
-if [[ -z "$SWARM_ROOT" ]]; then
-    SWARM_ROOT=$(find "$HOME/.codex/plugins/cache" -maxdepth 3 -type d -name 'swarmesh' 2>/dev/null | head -1)
-    [[ -n "$SWARM_ROOT" ]] && SWARM_ROOT=$(find "$SWARM_ROOT" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort -V | tail -1)
+# Locate swarmesh plugin root (优先 $SWARM_ROOT env)
+if [[ -z "${SWARM_ROOT:-}" || ! -d "$SWARM_ROOT/scripts" ]]; then
+    SWARM_ROOT=$(find "$HOME/.codex/plugins/cache" -type d -name scripts 2>/dev/null \
+        | grep -E '/swarmesh/[^/]+/scripts$' | head -1 | sed 's|/scripts$||')
 fi
-[[ -d "$SWARM_ROOT/scripts" ]] || { echo "⚠ 未找到 SWARM_ROOT"; exit 1; }
+[[ -n "${SWARM_ROOT:-}" && -d "$SWARM_ROOT/scripts" ]] || { echo "⚠ 未找到 swarmesh plugin root，请 export SWARM_ROOT=/path/to/swarmesh"; exit 1; }
 ```
 
 ## 2. 整体状态（含当前 mode）

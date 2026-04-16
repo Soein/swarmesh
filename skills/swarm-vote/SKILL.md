@@ -10,27 +10,49 @@ description: Run isolated multi-AI voting with LLM consensus analysis—independ
 ## 1. 定位 plugin root
 
 ```bash
-SWARM_ROOT="${SWARM_ROOT:-}"
-if [[ -z "$SWARM_ROOT" ]]; then
-    SWARM_ROOT=$(find "$HOME/.codex/plugins/cache" -maxdepth 3 -type d -name 'swarmesh' 2>/dev/null | head -1)
-    [[ -n "$SWARM_ROOT" ]] && SWARM_ROOT=$(find "$SWARM_ROOT" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort -V | tail -1)
+# Locate swarmesh plugin root (优先 $SWARM_ROOT env)
+if [[ -z "${SWARM_ROOT:-}" || ! -d "$SWARM_ROOT/scripts" ]]; then
+    SWARM_ROOT=$(find "$HOME/.codex/plugins/cache" -type d -name scripts 2>/dev/null \
+        | grep -E '/swarmesh/[^/]+/scripts$' | head -1 | sed 's|/scripts$||')
 fi
-[[ -d "$SWARM_ROOT/scripts" ]] || { echo "⚠ 未找到 SWARM_ROOT，请 export SWARM_ROOT=/path/to/swarmesh"; exit 1; }
+[[ -n "${SWARM_ROOT:-}" && -d "$SWARM_ROOT/scripts" ]] || { echo "⚠ 未找到 swarmesh plugin root，请 export SWARM_ROOT=/path/to/swarmesh"; exit 1; }
 ```
 
-## 2. 解析意图（dispatcher）
+## 2. 解析意图（dispatcher，bash 先行确定）
 
-根据用户输入的第一个 token 路由到对应子命令：
+**不要让 LLM 自由判断**。先用 bash 按第一个 token 硬路由：
+
+```bash
+# 参数解析：$1 = 第一个 token，$2+ = 剩余参数
+_FIRST="${1:-}"
+case "$_FIRST" in
+    "" | list)
+        "$SWARM_ROOT/scripts/lib/discuss-vote.sh" list
+        exit $?
+        ;;
+    report | collect | next-round | cancel)
+        _ID="${2:-}"
+        [[ -n "$_ID" ]] || { echo "⚠ $_FIRST 需要 vote-id 作为第 2 个参数"; exit 1; }
+        "$SWARM_ROOT/scripts/lib/discuss-vote.sh" "$_FIRST" --id "$_ID"
+        exit $?
+        ;;
+    *)
+        # 其他文本视作问题正文，走 ask 流程（见 §3）
+        _QUESTION="$*"
+        ;;
+esac
+```
+
+**dispatch 表**：
 
 | 第一个 token | 行为 |
 |---|---|
-| 空 / 无参数 | `list` — 列历史投票 |
-| `list` | `list` |
+| 空 / `list` | `list` 列历史 |
 | `report <id>` | `report --id <id>` |
 | `collect <id>` | `collect --id <id>` |
 | `next-round <id>` | `next-round --id <id>`（多轮辩论） |
 | `cancel <id>` | `cancel --id <id>` |
-| 其他文本 | 作为"问题"走 `ask` 流程 |
+| 其他任何文本 | 作为"问题"走 §3 ask |
 
 示例：
 ```
@@ -40,15 +62,6 @@ $swarm-vote report vote-xxx-abc       # 看报告
 $swarm-vote next-round vote-xxx-abc   # 下一轮
 $swarm-vote cancel vote-xxx-abc       # 取消
 $swarm-vote "Redis vs Dynamo？"        # 发起新投票
-```
-
-## 3. 对应 bash 调用
-
-根据 dispatch 结果：
-
-```bash
-# list / report / collect / next-round / cancel
-"$SWARM_ROOT/scripts/lib/discuss-vote.sh" <subcommand> [--id <vote-id>]
 ```
 
 ## 4. ask 流程（发起新投票）
