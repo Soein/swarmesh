@@ -1,0 +1,20 @@
+{
+  "name": "swarmesh-marketplace",
+  "interface": {
+    "displayName": "Swarmesh"
+  },
+  "plugins": [
+    {
+      "name": "swarmesh",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

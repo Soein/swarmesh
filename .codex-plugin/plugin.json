@@ -1,0 +1,30 @@
+{
+  "name": "swarmesh",
+  "version": "0.6.4",
+  "description": "Multi-CLI swarm in tmux. discuss (roundtable with Codex/Claude/Gemini) + vote (LLM-first consensus with multi-round debate, file injection, auto-promote) + execute (15-role supervisor dispatch). Participants use real CLI tools across all modes.",
+  "author": {
+    "name": "Soein"
+  },
+  "homepage": "https://github.com/Soein/swarmesh",
+  "repository": "https://github.com/Soein/swarmesh",
+  "license": "BSL-1.1",
+  "keywords": [
+    "tmux",
+    "swarm",
+    "swarmesh",
+    "multi-agent",
+    "orchestration",
+    "discuss",
+    "consensus",
+    "vote",
+    "llm",
+    "codex",
+    "claude"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Swarmesh",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write", "Execute"]
+  }
+}
