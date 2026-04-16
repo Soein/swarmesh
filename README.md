@@ -138,6 +138,7 @@ discuss-vote.sh ask \
 | `/swarm-join` / `/swarm-leave` | execute | 动态增删角色 |
 | `/swarm-chat` | discuss | 启动圆桌 |
 | `/swarm-chat-add` | discuss | 加参与者 |
+| `/swarm-chat-list` | discuss | 列出当前参与者（可 @点名的名字） |
 | `/swarm-chat-msg` | discuss | 发消息（@点名，v0.2 自动流转） |
 | `/swarm-vote` | discuss | 隔离投票（**v0.6**：LLM-first + 多轮辩论 + 文件注入 + 自动闭环） |
 | `/swarm-promote` | discuss→execute | 结案转落地 |

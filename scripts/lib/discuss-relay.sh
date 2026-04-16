@@ -280,7 +280,8 @@ cmd_post() {
         fi
         participant_name=$(jq -r --arg n "$m" '.discuss.participants[] | select(.name==$n) | .name' "$STATE_FILE")
         if [[ -z "$participant_name" ]]; then
-            info "⚠️  @$m 不在参与者列表，跳过"
+            local avail; avail=$(jq -r '[.discuss.participants[].name] | join(", ")' "$STATE_FILE")
+            info "⚠️  @$m 不在参与者列表，跳过 (可用: ${avail})"
             continue
         fi
         pane=$(jq -r --arg n "$m" '.discuss.participants[] | select(.name==$n) | .pane' "$STATE_FILE")

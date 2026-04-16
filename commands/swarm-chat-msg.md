@@ -7,17 +7,23 @@ description: 向 discuss 圆桌发一条消息，用 @name 点名触发对方接
 
 ## 执行步骤
 
-1. **语法提示**：用户输入即消息正文，含 `@name` 则触发该参与者接话。
+1. **先列出当前参与者**（告诉用户可以 @ 谁）：
+   ```bash
+   echo "当前参与者（可 @点名）："
+   "${CLAUDE_PLUGIN_ROOT}/scripts/lib/discuss-relay.sh" list
+   ```
+
+2. **语法提示**：用户输入即消息正文，含 `@name` 则触发该参与者接话。
    - 例如 `/swarm-chat-msg @codex @claude 设计 Redis 缓存方案`
    - 无 @点名 → 仅落盘记录，不触发任何 CLI
 
-2. **校验前提**：
+3. **校验前提**：
    ```bash
    MODE=$(jq -r '.mode' .swarm/runtime/state.json 2>/dev/null)
    [[ "$MODE" == "discuss" ]] || echo "⚠️ 当前不是 discuss 模式"
    ```
 
-3. **发送**：
+4. **发送**：
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/scripts/lib/discuss-relay.sh" post \
        --from "user" \
