@@ -140,6 +140,7 @@ discuss-vote.sh ask \
 | `/swarm-chat-add` | discuss | 加参与者 |
 | `/swarm-chat-list` | discuss | 列出当前参与者（可 @点名的名字） |
 | `/swarm-chat-msg` | discuss | 发消息（@点名，v0.2 自动流转） |
+| `/swarm-chat-tail` | discuss | 查看最近 N 轮对话历史 |
 | `/swarm-vote` | discuss | 隔离投票（**v0.6**：LLM-first + 多轮辩论 + 文件注入 + 自动闭环） |
 | `/swarm-promote` | discuss→execute | 结案转落地 |
 | `/swarm-status` | 通用 | 查看状态 |
