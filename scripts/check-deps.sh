@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check-deps.sh — tmux-swarm 插件依赖自检
+# check-deps.sh — swarmesh 插件依赖自检
 #
 # 用法:
 #   check-deps.sh              # 人类可读报告，缺失时退出码 1
@@ -72,7 +72,7 @@ if [[ "$MODE" == "quiet" ]]; then
     exit 0
 fi
 
-echo "✅ tmux-swarm 依赖检查通过"
+echo "✅ swarmesh 依赖检查通过"
 echo
 echo "必需依赖:"
 for v in "${versions[@]}"; do

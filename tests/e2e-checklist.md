@@ -1,4 +1,4 @@
-# tmux-swarm v0.1 端到端实测记录
+# swarmesh v0.1 端到端实测记录
 
 实测时间：2026-04-13
 环境：macOS / tmux 3.6a / jq 1.7.1 / bash 5.3.9

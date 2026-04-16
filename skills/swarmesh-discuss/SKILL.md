@@ -1,9 +1,9 @@
 ---
-name: tmux-swarm-discuss
+name: swarmesh-discuss
 description: Use when the user wants to brainstorm, explore, cross-discuss, or run an isolated consensus vote across multiple CLIs (Codex + Claude + Gemini) in one roundtable before committing to implementation. Triggers on "和 Codex 聊聊 / 碰方案 / 讨论 / 圆桌 / 多 AI 一起聊 / 投票 / consensus / 独立意见". Supports auto @-mention relay (v0.2 pane watcher), turn cap, and isolated voting via /swarm-vote. When the plan is ready, use /swarm-promote to transition to the execute mode swarm.
 ---
 
-# tmux-swarm — discuss 模式
+# swarmesh — discuss 模式
 
 一个 tmux session 里把多个 CLI 拉到"圆桌"上共聊。用户用 `@name` 点名触发某个参与者接话；参与者也可以 `@ 其他人` 形成多方交叉讨论。有最大轮次硬上限（默认 20）防止无限互答。
 
@@ -13,7 +13,7 @@ description: Use when the user wants to brainstorm, explore, cross-discuss, or r
 - 方案尚未成型，属于探讨阶段
 - 想让两个模型互相点评彼此观点（Codex vs Claude）
 
-**不适用**（改用 `tmux-swarm-execute`）：
+**不适用**（改用 `swarmesh-execute`）：
 - 用户已经有明确任务要落地执行
 - 需要 supervisor 拆解任务并派发
 

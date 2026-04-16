@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 ################################################################################
-# discuss-relay.sh — tmux-swarm discuss 模式核心
+# discuss-relay.sh — swarmesh discuss 模式核心
 #
 # 负责圆桌讨论：多个 CLI（Codex / Claude / Gemini）在一个 tmux session 里互相
 # 交流，用户通过 @点名 触发被点名者接话。不走 supervisor 编排。
@@ -452,7 +452,7 @@ case "${1:-}" in
     stop)    shift; cmd_stop    "$@" ;;
     ""|help|-h|--help)
         cat <<EOF
-discuss-relay.sh — tmux-swarm discuss 模式
+discuss-relay.sh — swarmesh discuss 模式
 
 子命令:
   start   --project <dir> --cli <cmd> [--name <n>] [--hidden]

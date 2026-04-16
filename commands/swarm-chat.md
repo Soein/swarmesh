@@ -3,7 +3,7 @@ name: swarm-chat
 description: 启动 discuss 模式：与某个 CLI（Codex/Claude/Gemini）在一个会话内圆桌讨论
 ---
 
-启动 tmux-swarm 的 **discuss 模式**——与一个或多个 CLI 在同一会话内自由讨论、碰方案。与 `/swarm-start` 的 execute 模式互斥。
+启动 swarmesh 的 **discuss 模式**——与一个或多个 CLI 在同一会话内自由讨论、碰方案。与 `/swarm-start` 的 execute 模式互斥。
 
 ## 执行步骤
 

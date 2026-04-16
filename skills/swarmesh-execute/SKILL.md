@@ -1,11 +1,11 @@
 ---
-name: tmux-swarm-execute
+name: swarmesh-execute
 description: Use when the user wants to orchestrate a multi-role coding task across Claude Code / Codex / Gemini with a supervisor dispatching work to specialized agents (backend / frontend / reviewer / architect / tester ...). Triggers on "并行 + 多角色 + 编排/拆解" 类需求，例如 "用蜂群实现 X", "并行修复 Y", "让 supervisor 拆任务"。Spawns a tmux swarm (4–15 roles).
 ---
 
-# tmux-swarm — execute 模式
+# swarmesh — execute 模式
 
-本 skill 负责把用户"我想让多个 AI 角色协同干活"的需求转成 tmux-swarm 的 execute 模式调用。
+本 skill 负责把用户"我想让多个 AI 角色协同干活"的需求转成 swarmesh 的 execute 模式调用。
 
 ## 何时触发
 
@@ -14,7 +14,7 @@ description: Use when the user wants to orchestrate a multi-role coding task acr
 - 任务明显需要多种专长协同（产品 + 前后端 + 测试 + 审核）
 - 用户已经和单个 CLI 讨论成型了方案，要落地执行
 
-**不适用**（改用 `tmux-swarm-discuss`）：
+**不适用**（改用 `swarmesh-discuss`）：
 - 用户只想"和 Codex 聊聊"、"讨论方案"、"碰思路"等探讨阶段
 
 ## 执行流程
