@@ -3,6 +3,20 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.0] - 2026-04-16
+### Added
+- **Codex CLI 插件适配**：同 repo 双平台支持
+  - `.codex-plugin/plugin.json` Codex manifest
+  - `.agents/plugins/marketplace.json` repo-level marketplace
+  - `AGENTS.md` Codex 引导文档（CLAUDE.md 的 Codex 版本）
+  - `skills/` 下 13 个 SKILL.md（按 agentskills.io 标准，description 含 "what + when" + quoted phrases）
+  - 每个 skill body 内置 `SWARM_ROOT` 探测 snippet（`~/.codex/plugins/cache` 兜底）
+  - README 加 Codex 安装段
+
+### Changed
+- Claude Code 和 Codex 共享 `scripts/` 同一套 bash 代码（CLI-agnostic，`BASH_SOURCE` 自推导）
+- Claude Code 版 `commands/*.md` 保持不变，确保 v0.6.4 行为零回归
+
 ## [0.6.4] - 2026-04-15
 ### Fixed
 - `_vote_hit_prompt` tail -6 → -20，覆盖 Claude TUI 8 行状态栏（E2E 发现的 production-killer bug）

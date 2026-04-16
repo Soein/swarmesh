@@ -1,6 +1,6 @@
 {
   "name": "swarmesh",
-  "version": "0.6.4",
+  "version": "0.7.0",
   "description": "Multi-CLI swarm in tmux. discuss (roundtable with Codex/Claude/Gemini) + vote (LLM-first consensus with multi-round debate, file injection, auto-promote to execute) + execute (15-role supervisor dispatch). v0.6 delivers feature parity with pal consensus plus tmux-only strengths: participants use real CLI tools, multi-round rebuttal, vote→execute automation.",
   "author": {
     "name": "Soein"

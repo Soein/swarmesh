@@ -16,17 +16,38 @@ Swarmesh 现在可作为 **Claude Code 插件**使用，提供两种协作模式
 
 ### 安装
 
+#### Claude Code
+
 ```bash
-# 在 Claude Code 中：
 /plugin marketplace add Soein/swarmesh
 /plugin install swarmesh
 ```
 
-或本地测试：
+本地测试：`claude --plugin-dir ~/项目/tmux并行`
+
+#### Codex CLI（v0.7.0+ 支持）
+
+需要 Codex ≥ 0.110.0（`codex --version` 确认）。
 
 ```bash
-claude --plugin-dir ~/项目/tmux并行
+# 1. 启用 plugin features
+cat >> ~/.codex/config.toml <<EOF
+[features]
+plugins = true
+EOF
+
+# 2. 装 marketplace（本地 / GitHub / git URL 均可）
+codex marketplace add Soein/swarmesh
+# 或本地: codex marketplace add /path/to/swarmesh
+
+# 3. 装插件
+codex plugin install swarmesh
+
+# 4. 验证
+codex   # 进入 REPL 后输入 /skills 应看到 13 个 swarm-* skills
 ```
+
+启动后 Codex 会根据用户意图**自动激活** skill（LLM 匹配 description），也可用 `$swarm-chat` 等显式调用。
 
 ### discuss 模式速览
 
